@@ -43,8 +43,10 @@ PUSH_REG_NOTIF_PREFIX = b"PUSH_REG:"
 #      clock-sync timestamp
 #   6: Validate EAGLE/MTP speculative configuration compatibility
 #   7: Include NIXL transfer mode (push vs pull) in the compatibility hash
+#   8: Carry ordered KV region names for non-uniform PP region mapping
+#   9: Carry physical cache-block strides separately from transfer lengths
 #
-NIXL_CONNECTOR_VERSION: int = 7
+NIXL_CONNECTOR_VERSION: int = 9
 
 
 @dataclass
@@ -60,6 +62,8 @@ class NixlAgentMetadata:
     ssm_sizes: tuple[int, int]
     attn_backend_name: str
     physical_blocks_per_logical_kv_block: int
+    layer_names: list[str] | None = None
+    block_strides: list[int] | None = None
 
 
 @dataclass

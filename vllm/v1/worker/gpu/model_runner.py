@@ -238,14 +238,23 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         self.speculator = None
         self.use_aux_hidden_state_outputs = False
         self.num_speculative_steps = vllm_config.num_speculative_tokens
+        # Keep a TP=1 DSpark replica on every PP stage so draft-token state and
+        # PP collectives are initialized symmetrically. Only the last stage
+        # executes propose(). Inactive replicas deliberately do not advertise
+        # or bind draft KV cache (see get_kv_cache_spec/initialize_kv_cache).
+        self.replicated_dspark_over_pp = (
+            self.use_pp
+            and self.speculative_config is not None
+            and self.speculative_config.method == "dspark"
+        )
         if self.speculative_config is not None:
-            if self.is_last_pp_rank:
+            if self.is_last_pp_rank or self.replicated_dspark_over_pp:
                 self.speculator = init_speculator(self.vllm_config, self.device)
 
             if self.speculative_config.method in ("eagle3", "dflash", "dspark"):
                 # Drafting may require auxiliary hidden states from target model outputs
                 self.use_aux_hidden_state_outputs = True
-                if self.use_pp:
+                if self.use_pp and self.speculative_config.method != "dspark":
                     raise ValueError(
                         f"{self.speculative_config.method} with pipeline parallel "
                         "is not supported."
@@ -490,7 +499,33 @@ class GPUModelRunner(LoRAModelRunnerMixin):
     def get_kv_cache_spec(self):
         if self.is_encoder_only:
             return {}
-        return get_kv_cache_spec(self.vllm_config)
+        kv_cache_spec = get_kv_cache_spec(self.vllm_config)
+        if (
+            self.replicated_dspark_over_pp
+            and not self.is_last_pp_rank
+        ):
+            # The draft module is replicated on every PP stage to keep DSpark's
+            # runtime state and PP collectives symmetric, but only the last PP
+            # stage executes it. Advertising the inactive replicas' KV layers
+            # makes the global planner allocate draft pages on every stage and
+            # changes the NIXL P->D memory geometry. Keep the original, valid
+            # topology: target KV is sharded by PP and draft KV lives only on
+            # the last stage.
+            target_layer_count = self.model_config.get_total_num_hidden_layers()
+
+            def is_draft_layer(layer_name: str) -> bool:
+                parts = layer_name.split(".")
+                for index, part in enumerate(parts[:-1]):
+                    if part == "layers" and parts[index + 1].isdigit():
+                        return int(parts[index + 1]) >= target_layer_count
+                return False
+
+            kv_cache_spec = {
+                name: spec
+                for name, spec in kv_cache_spec.items()
+                if not is_draft_layer(name)
+            }
+        return kv_cache_spec
 
     def initialize_kv_cache(self, kv_cache_config: KVCacheConfig) -> None:
         kv_cache_config = deepcopy(kv_cache_config)
@@ -591,7 +626,10 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             varlen_decode=self.adaptive_verification is not None,
         )
         check_attention_cp_compatibility(self.vllm_config)
-        if isinstance(self.speculator, DraftModelSpeculator):
+        active_speculator = (
+            not self.replicated_dspark_over_pp or self.is_last_pp_rank
+        )
+        if active_speculator and isinstance(self.speculator, DraftModelSpeculator):
             # HACK(woosuk)
             self.speculator.set_attn(
                 self.model_state,
@@ -600,7 +638,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 self.input_buffers,
                 self.attn_groups,
             )
-        if self.speculator is not None:
+        if active_speculator and self.speculator is not None:
             # After set_attn, so the speculator can size its cudagraph mode
             # to its own attention support.
             self.speculator.init_cudagraph_manager(cudagraph_mode)
@@ -887,7 +925,9 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                     use_aux_hidden_state_outputs=self.use_aux_hidden_state_outputs,
                     lora_capture_hook=create_lora_capture_hook(self.lora_config, self),
                 )
-                if self.speculator is not None:
+                if self.speculator is not None and (
+                    not self.replicated_dspark_over_pp or self.is_last_pp_rank
+                ):
                     with use_workspace_lane(self._draft_workspace_lane):
                         self.speculator.capture()
                 if self.adaptive_verification is not None:
@@ -948,7 +988,9 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         # For non-last PP ranks, update decode requests with sampler output from
         # the prior step in which they were scheduled (pp_size steps ago).
         if self.pp_handler is not None:
-            outputs = self.pp_handler.get_prev_sampled_outputs()
+            outputs = self.pp_handler.get_prev_sampled_outputs(
+                self.req_states.draft_tokens
+            )
             if outputs is not None:
                 self.postprocess_sampled(**outputs)
 
@@ -1840,6 +1882,10 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                     mm_inputs=mm_inputs,
                 )
             self.req_states.draft_tokens[input_batch.idx_mapping] = draft_tokens
+            if self.pp_handler is not None:
+                self.pp_handler.broadcast_drafts(
+                    self.req_states.draft_tokens, input_batch
+                )
             if self.adaptive_verification is not None:
                 self.adaptive_verification.record_confidences(
                     self.speculator.draft_token_confidence_probs, input_batch

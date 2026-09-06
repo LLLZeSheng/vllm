@@ -12,7 +12,13 @@ from vllm.distributed.kv_transfer.kv_connector.utils import (
     BlockIds,
     TransferTopology,
 )
-from vllm.v1.kv_cache_interface import AttentionSpec, KVCacheSpec, MambaSpec
+from vllm.v1.kv_cache_interface import (
+    AttentionSpec,
+    KVCacheSpec,
+    MLAAttentionSpec,
+    MambaSpec,
+    SlidingWindowMLASpec,
+)
 
 # ======================================================================
 # Data structures
@@ -34,6 +40,10 @@ def _is_attention_spec(spec_type: type[KVCacheSpec]) -> bool:
 
 def _is_ssm_spec(spec_type: type[KVCacheSpec]) -> bool:
     return issubclass(spec_type, MambaSpec)
+
+
+def _is_mla_attention_spec(spec_type: type[KVCacheSpec]) -> bool:
+    return issubclass(spec_type, (MLAAttentionSpec, SlidingWindowMLASpec))
 
 
 @dataclass(frozen=True)
@@ -66,6 +76,7 @@ def compute_tp_mapping(
     transfer_topology: TransferTopology,
     remote_tp_size: int,
     group_spec_types: tuple[type[KVCacheSpec], ...],
+    has_split_attention_regions: bool = False,
 ) -> TPMapping:
     """Build the complete local-to-remote TP mapping.
 
@@ -76,12 +87,13 @@ def compute_tp_mapping(
     tp_size = transfer_topology.tp_size
     total_num_kv_heads = transfer_topology.total_num_kv_heads
     # --- Attention source ranks ---
-    if transfer_topology.is_mla or tp_size >= remote_tp_size:
+    mla_attn_ranks = [tp_rank * remote_tp_size // tp_size]
+    if tp_size >= remote_tp_size:
         # D (local TP) > P (remote TP): multiple local ranks read different chunks from
         # *one* remote rank, corresponding to different kv heads.
         # For MLA, we only need one remote since cache is duplicated. When P TP=k*TP k,
         # this will spread mla ranks to read from remote k*tp_rank.
-        attn_ranks = [tp_rank * remote_tp_size // tp_size]
+        full_attn_ranks = list(mla_attn_ranks)
     else:
         # P (remote TP) > D (local TP): one local rank
         # reads from multiple remote ranks.
@@ -92,7 +104,7 @@ def compute_tp_mapping(
         start = tp_rank * abs_tp
         heads = np.arange(start, start + abs_tp) * total_num_kv_heads // remote_tp_size
         _, unique_idx = np.unique(heads, return_index=True)
-        attn_ranks = (start + np.sort(unique_idx)).tolist()
+        full_attn_ranks = (start + np.sort(unique_idx)).tolist()
 
     # --- SSM source ranks ---
     has_ssm = any(_is_ssm_spec(t) for t in group_spec_types)
@@ -101,21 +113,33 @@ def compute_tp_mapping(
             abs_tp = remote_tp_size // tp_size
             ssm_ranks = list(range(tp_rank * abs_tp, (tp_rank + 1) * abs_tp))
         else:
-            ssm_ranks = list(attn_ranks)
+            ssm_ranks = list(full_attn_ranks)
     else:
         ssm_ranks = []
 
-    all_ranks = sorted(set(attn_ranks) | set(ssm_ranks))
-
     # --- Per-group ordered source ranks ---
     source_ranks_per_group = tuple(
-        tuple(ssm_ranks) if _is_ssm_spec(t) else tuple(attn_ranks)
+        tuple(ssm_ranks)
+        if _is_ssm_spec(t)
+        else tuple(mla_attn_ranks)
+        if _is_mla_attention_spec(t) and not has_split_attention_regions
+        else tuple(full_attn_ranks)
         for t in group_spec_types
     )
+    all_ranks = sorted({rank for ranks in source_ranks_per_group for rank in ranks})
 
     # --- Attention head slots ---
     head_to_slot: dict[int, int] = {}
-    for i, r in enumerate(attn_ranks):
+    slot_ranks = (
+        full_attn_ranks
+        if any(
+            _is_attention_spec(t)
+            and (not _is_mla_attention_spec(t) or has_split_attention_regions)
+            for t in group_spec_types
+        )
+        else mla_attn_ranks
+    )
+    for i, r in enumerate(slot_ranks):
         head_to_slot[r * total_num_kv_heads // remote_tp_size] = i
     rank_to_attention_slot = {
         r: head_to_slot.get(r * total_num_kv_heads // remote_tp_size, 0)
@@ -123,12 +147,12 @@ def compute_tp_mapping(
     }
 
     # --- Rank offset factor ---
-    if transfer_topology.is_mla or tp_size <= remote_tp_size:
+    if tp_size <= remote_tp_size:
         # We don't index into remote for reading, no offset needed.
         rank_offset_factor = 0
     elif tp_size > total_num_kv_heads:
         local_head = tp_rank * total_num_kv_heads // tp_size
-        p_start = attn_ranks[0] * total_num_kv_heads // remote_tp_size
+        p_start = full_attn_ranks[0] * total_num_kv_heads // remote_tp_size
         rank_offset_factor = local_head - p_start
     else:
         # D TP > P TP: we index into remote to read different heads depending on rank.

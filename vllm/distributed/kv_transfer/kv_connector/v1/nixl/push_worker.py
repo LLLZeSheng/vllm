@@ -459,6 +459,25 @@ class NixlPushConnectorWorker(NixlBaseConnectorWorker):
 
         logical_local = self._as_grouped_block_ids(local_block_ids)
         logical_remote = self._as_grouped_block_ids(remote_block_ids)
+        if len(logical_local) != len(logical_remote):
+            raise RuntimeError(
+                f"P/D KV group mismatch for {request_id}: "
+                f"{len(logical_local)} local vs {len(logical_remote)} remote"
+            )
+        # P may run a private speculative suffix while D allocates only up to
+        # the public prompt boundary. Transfer exactly the logical prefix D
+        # requested; an extra P block must not shift or extend the copy.
+        clipped_local = []
+        for group_index, (local_group, remote_group) in enumerate(
+            zip(logical_local, logical_remote)
+        ):
+            if len(local_group) < len(remote_group):
+                raise RuntimeError(
+                    f"P has fewer KV blocks than D for {request_id} group "
+                    f"{group_index}: {len(local_group)} < {len(remote_group)}"
+                )
+            clipped_local.append(list(local_group[: len(remote_group)]))
+        logical_local = tuple(clipped_local)
         physical_local = self._logical_to_kernel_block_ids(
             logical_local, self._physical_blocks_per_logical_kv_block
         )

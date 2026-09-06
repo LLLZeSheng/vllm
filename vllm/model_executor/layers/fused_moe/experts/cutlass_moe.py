@@ -337,7 +337,12 @@ class CutlassExpertsFp8Base(mk.FusedMoEExpertsModular):
     def _get_permute_scratch(self) -> MoEPermuteScratch | None:
         if self._permute_scratch is None and moe_permute_unpermute_supported():
             self._permute_scratch = MoEPermuteScratch(
-                max_num_tokens=self.moe_config.max_num_tokens,
+                # DP profile runs materialize the global token budget on every
+                # worker, while FusedMoEConfig stores the per-DP budget.
+                max_num_tokens=(
+                    self.moe_config.max_num_tokens
+                    * self.moe_config.moe_parallel_config.dp_size
+                ),
                 topk=self.moe_config.experts_per_token,
                 num_experts=self.moe_config.num_experts,
                 num_local_experts=self.moe_config.num_local_experts,
@@ -1360,7 +1365,12 @@ class CutlassExpertsW4A8Fp8(mk.FusedMoEExpertsModular):
     def _get_permute_scratch(self) -> MoEPermuteScratch | None:
         if self._permute_scratch is None and moe_permute_unpermute_supported():
             self._permute_scratch = MoEPermuteScratch(
-                max_num_tokens=self.moe_config.max_num_tokens,
+                # DP profile runs materialize the global token budget on every
+                # worker, while FusedMoEConfig stores the per-DP budget.
+                max_num_tokens=(
+                    self.moe_config.max_num_tokens
+                    * self.moe_config.moe_parallel_config.dp_size
+                ),
                 topk=self.moe_config.experts_per_token,
                 num_experts=self.moe_config.num_experts,
                 num_local_experts=self.moe_config.num_local_experts,

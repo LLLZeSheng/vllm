@@ -1,0 +1,1129 @@
+diff --git a/vllm/config/speculative.py b/vllm/config/speculative.py
+index 2b93113..193d4ca 100644
+--- a/vllm/config/speculative.py
++++ b/vllm/config/speculative.py
+@@ -1321,7 +1321,10 @@ class SpeculativeConfig:
+         This is mostly a copy of the target parallel config, except the tp_size.
+         """
+         draft_parallel_config = ParallelConfig(
+-            pipeline_parallel_size=target_parallel_config.pipeline_parallel_size,
++            # Draft models are instantiated only on the target's last PP rank.
++            # They must therefore own their complete layer stack rather than
++            # inheriting the target model's pipeline partition.
++            pipeline_parallel_size=1,
+             tensor_parallel_size=speculative_draft_tensor_parallel_size,
+             distributed_executor_backend=target_parallel_config.distributed_executor_backend,
+             max_parallel_loading_workers=target_parallel_config.max_parallel_loading_workers,
+diff --git a/vllm/distributed/kv_transfer/kv_connector/v1/nixl/base_worker.py b/vllm/distributed/kv_transfer/kv_connector/v1/nixl/base_worker.py
+index d2c0736..6668ca8 100644
+--- a/vllm/distributed/kv_transfer/kv_connector/v1/nixl/base_worker.py
++++ b/vllm/distributed/kv_transfer/kv_connector/v1/nixl/base_worker.py
+@@ -62,6 +62,7 @@ from vllm.distributed.kv_transfer.kv_connector.v1.ssm_conv_transfer_utils import
+ )
+ from vllm.distributed.nixl_utils import NixlWrapper, nixl_agent_config
+ from vllm.distributed.parallel_state import (
++    get_pp_group,
+     get_tensor_model_parallel_rank,
+     get_tensor_model_parallel_world_size,
+ )
+@@ -119,15 +120,30 @@ class NixlBaseConnectorWorker:
+ 
+         # All-attention fast path: single vectorized broadcast.
+         if num_ssm_regions == 0:
+-            # NOTE (NickLucche) With HMA, every kv group has the same number of layers
+-            # and layers from different groups share the same kv tensor.
+-            # eg block_ids=[[1, 2], [3]]->blocks [1, 2] need to be
+-            # read across all regions, same for [3], but group0-group1 blocks will
+-            # always differ (different areas). Therefore we can just flatten the
+-            # block_ids and compute the descs ids for all groups at once.
+-            block_arr = np.concatenate(block_ids)[None, :]
+-            region_ids = np.arange(self.num_regions)[:, None]
+-            return (region_ids * num_blocks + block_arr).flatten()
++            # Select allocator blocks per registered region. Applying every
++            # group's block ids to every region corrupts a separate DSpark KV
++            # group when it coexists with the verifier's MLA cache.
++            if len(block_ids) == 1 or not self._region_group_indices:
++                block_arr = np.concatenate(block_ids)[None, :]
++                region_ids = np.arange(self.num_regions)[:, None]
++                return (region_ids * num_blocks + block_arr).flatten()
++
++            all_descs: list[np.ndarray] = []
++            for region_id, group_indices in enumerate(self._region_group_indices):
++                region_blocks = [
++                    np.asarray(block_ids[group_index])
++                    for group_index in sorted(group_indices)
++                    if group_index < len(block_ids) and len(block_ids[group_index])
++                ]
++                if region_blocks:
++                    all_descs.append(
++                        region_id * num_blocks + np.concatenate(region_blocks)
++                    )
++            return (
++                np.concatenate(all_descs)
++                if all_descs
++                else np.array([], dtype=np.int64)
++            )
+ 
+         # Compute desc ids per group using the right stride: FA descs have
+         # num_blocks entries per region (kernel granularity, expanded by
+@@ -180,10 +196,11 @@ class NixlBaseConnectorWorker:
+         FA uses rank_to_attention_slot for the slot offset;
+         SSM uses the rank's positional index.
+         """
+-        fa_idx = next(
+-            i for i, t in enumerate(self._group_spec_types) if _is_attention_spec(t)
++        fa_num_splits = max(
++            len(plan.source_ranks_per_group[i])
++            for i, t in enumerate(self._group_spec_types)
++            if _is_attention_spec(t)
+         )
+-        fa_num_splits = len(plan.source_ranks_per_group[fa_idx])
+ 
+         has_ssm_descs = num_fa_descs < len(src_blocks_data)
+         ssm_idx = next(
+@@ -251,6 +268,12 @@ class NixlBaseConnectorWorker:
+         """
+         return region_idx < len(self._region_is_mla) and self._region_is_mla[region_idx]
+ 
++    def _is_pure_mla(self) -> bool:
++        """Whether every registered attention cache region uses MLA."""
++        if self._region_is_mla:
++            return all(self._region_is_mla)
++        return self.use_mla
++
+     def __init__(
+         self,
+         vllm_config: "VllmConfig",
+@@ -301,6 +324,11 @@ class NixlBaseConnectorWorker:
+             for group in kv_cache_config.kv_cache_groups
+             for layer in group.layer_names
+         }
++        self._layer_to_group = {
++            layer: group_index
++            for group_index, group in enumerate(kv_cache_config.kv_cache_groups)
++            for layer in group.layer_names
++        }
+         self.hma_group_size = len(kv_cache_config.kv_cache_tensors)
+ 
+         # ---- Model state (derived from model config) ----
+@@ -442,10 +470,10 @@ class NixlBaseConnectorWorker:
+         self.pp_size = vllm_config.parallel_config.pipeline_parallel_size
+         self._remote_region_offset = 0
+         # PP push slices regions per layer (uniform count); HMA breaks that.
+-        if self.pp_size > 1 and self._is_hma_required:
+-            raise NotImplementedError(
+-                "NixlPushConnector does not support pipeline_parallel_size > 1 "
+-                "with hybrid KV cache layouts (HMA) yet."
++        if self._TRANSFER_MODE == "push" and self.pp_size > 1 and self._is_hma_required:
++            logger.info(
++                "Enabling NixlPushConnector PP with hybrid KV/HMA; "
++                "remote regions will be matched by exact KV layer name."
+             )
+         # Decode-side PP is unsupported (completions counted per consumer rank).
+         if vllm_config.kv_transfer_config.kv_role == "kv_consumer" and self.pp_size > 1:
+@@ -553,6 +581,9 @@ class NixlBaseConnectorWorker:
+         # Enable different block lengths for different layers *only* when MLA is used.
+         # This is not used for SSM layers, which use the counterpart `mamba_ssm_size`.
+         self.block_len_per_layer = list[int]()
++        self.block_stride_per_layer = list[int]()
++        self._registered_layer_names: list[str] = []
++        self._region_group_indices: list[set[int]] = []
+ 
+         # Per-engine TP mappings. Generated during handshake.
+         self.tp_mappings: dict[EngineId, TPMapping] = {}
+@@ -1003,6 +1034,10 @@ class NixlBaseConnectorWorker:
+         caches_data = [(base_addr, total_size, self.device_id, "")]
+ 
+         self.block_len_per_layer = [block_stride]
++        self.block_stride_per_layer = [block_stride]
++        self._region_group_indices = [
++            set(range(len(self.kv_cache_config.kv_cache_groups)))
++        ]
+         self.num_regions = 1
+         self.num_descs = self.num_blocks
+         self.kv_caches_base_addr[self.engine_id][self.tp_rank] = [base_addr]
+@@ -1033,6 +1068,7 @@ class NixlBaseConnectorWorker:
+             physical_blocks_per_logical_kv_block=(
+                 self._physical_blocks_per_logical_kv_block
+             ),
++            block_strides=self.block_stride_per_layer,
+         )
+         assert self.compat_hash is not None
+         encoder = msgspec.msgpack.Encoder()
+@@ -1110,7 +1146,33 @@ class NixlBaseConnectorWorker:
+         # register separate conv/ssm sub-regions (see `_build_mamba_local`).
+         tensor_size_bytes = None
+ 
++        # DSpark is replicated on every PP stage to keep KV-cache planning
++        # symmetric, but only the last stage runs the drafter. Do not register
++        # the unused draft regions from earlier stages for P->D transfer; doing
++        # so would overwrite the valid draft KV produced by the last stage.
++        speculative_config = self.vllm_config.speculative_config
++        drop_inactive_pp_dspark_kv = (
++            self.pp_size > 1
++            and speculative_config is not None
++            and speculative_config.method == "dspark"
++            and not get_pp_group().is_last_rank
++        )
++        target_num_layers = int(self.model_config.hf_config.num_hidden_layers)
++
+         for layer_name, cache in xfer_buffers.items():
++            layer_name_parts = layer_name.split(".")
++            if (
++                drop_inactive_pp_dspark_kv
++                and len(layer_name_parts) > 2
++                and layer_name_parts[0:2] == ["model", "layers"]
++                and layer_name_parts[2].isdigit()
++                and int(layer_name_parts[2]) >= target_num_layers
++            ):
++                logger.debug(
++                    "Skipping inactive PP-stage DSpark KV region %s",
++                    layer_name,
++                )
++                continue
+             # NOTE (NickLucche) Hybrid SSM mamba/FA physical page_size may differ when
+             # kernel requires a specific block size. This leads to SSM and FA layers
+             # having different num_blocks.
+@@ -1147,6 +1209,7 @@ class NixlBaseConnectorWorker:
+             # `page_size` accounts for physical blocks, st KVCache is always
+             # [`num_blocks` * `page_size`]
+             curr_tensor_size_bytes = num_blocks * physical_page_size
++            actual_block_stride = cache.stride(0) * cache.element_size()
+ 
+             base_addr = cache.data_ptr()
+             is_mla_region = isinstance(
+@@ -1162,12 +1225,20 @@ class NixlBaseConnectorWorker:
+                 # layer registered it first.
+                 idx = seen_base_addresses.index(base_addr)
+                 self._region_is_mla[idx] |= is_mla_region
++                group_index = self._layer_to_group.get(layer_name)
++                if group_index is not None:
++                    self._region_group_indices[idx].add(group_index)
+                 logger.debug("Skipping %s because it's already seen", layer_name)
+                 continue
+             logger.debug(
+                 "Registering layer %s with cache shape: %s", layer_name, cache.shape
+             )
+             seen_base_addresses.append(base_addr)
++            self._registered_layer_names.append(layer_name)
++            group_index = self._layer_to_group.get(layer_name)
++            self._region_group_indices.append(
++                {group_index} if group_index is not None else set()
++            )
+             # Only record non-Mamba page sizes.
+             if isinstance(layer_spec, MambaSpec):
+                 self.block_len_per_layer.append(
+@@ -1176,6 +1247,7 @@ class NixlBaseConnectorWorker:
+             else:
+                 self.block_len_per_layer.append(physical_page_size)
+             self._region_is_mla.append(is_mla_region)
++            self.block_stride_per_layer.append(actual_block_stride)
+ 
+             if not is_mla_region:
+                 if tensor_size_bytes is None:
+@@ -1215,6 +1287,7 @@ class NixlBaseConnectorWorker:
+             len(self.block_len_per_layer)
+             == len(seen_base_addresses)
+             == len(self._region_is_mla)
++            == len(self.block_stride_per_layer)
+         )
+ 
+         self.kv_caches_base_addr[self.engine_id][self.tp_rank] = seen_base_addresses
+@@ -1224,10 +1297,13 @@ class NixlBaseConnectorWorker:
+             start_layer, end_layer = self.model_config.get_layers_start_end_indices(
+                 self.vllm_config.parallel_config
+             )
+-            num_local_layers = end_layer - start_layer
+-            assert num_local_layers > 0 and self.num_regions % num_local_layers == 0
+-            regions_per_layer = self.num_regions // num_local_layers
+-            self._remote_region_offset = regions_per_layer * start_layer
++            logger.info(
++                "PP KV regions: layers=[%d,%d), regions=%d, names=%s",
++                start_layer,
++                end_layer,
++                self.num_regions,
++                self._registered_layer_names,
++            )
+ 
+         # Total local FA descriptors (boundary between FA and mamba descs).
+         self.num_descs = self.num_regions * self.num_blocks
+@@ -1277,6 +1353,8 @@ class NixlBaseConnectorWorker:
+             physical_blocks_per_logical_kv_block=(
+                 self._physical_blocks_per_logical_kv_block
+             ),
++            layer_names=self._registered_layer_names,
++            block_strides=self.block_stride_per_layer,
+         )
+         # Wrap metadata in payload with hash for defensive decoding
+         assert self.compat_hash is not None
+@@ -1407,7 +1485,12 @@ class NixlBaseConnectorWorker:
+             # K/V are packed into the content dim, so the whole block transfers
+             # as one unit: desc length equals the block stride.
+             block_len = self.block_len_per_layer[i] // block_size_ratio
+-            addrs = base_addr + block_arange * block_len
++            page_stride = (
++                self.block_stride_per_layer[i]
++                if block_size_ratio == 1
++                else block_len
++            )
++            addrs = base_addr + block_arange * page_stride
+             parts.append(self._stack_descs(addrs, block_len, device_id))
+         return np.concatenate(parts)
+ 
+@@ -1422,12 +1505,13 @@ class NixlBaseConnectorWorker:
+         assert nixl_agent_meta.kv_caches_base_addr, (
+             "Remote KV cache base addresses must not be empty."
+         )
+-        fa_group_idx = next(
+-            i for i, t in enumerate(self._group_spec_types) if _is_attention_spec(t)
++        split_reads = max(
++            len(plan.source_ranks_per_group[i])
++            for i, t in enumerate(self._group_spec_types)
++            if _is_attention_spec(t)
+         )
+         # SPLIT regions read their head slice from this many remote ranks at a
+         # per-rank offset; REPLICATE regions read the whole block once.
+-        split_reads = len(plan.source_ranks_per_group[fa_group_idx])
+         num_blocks = nixl_agent_meta.num_blocks
+         device_id = nixl_agent_meta.device_id
+         block_arange = np.arange(num_blocks, dtype=np.uint64)
+@@ -1449,8 +1533,12 @@ class NixlBaseConnectorWorker:
+             )
+             local_block_len = local_block_len // num_reads
+ 
+-            page_size = nixl_agent_meta.block_lens[i]
+-            addrs = base_addr + rank_offset + block_arange * page_size
++            page_stride = (
++                nixl_agent_meta.block_strides[i]
++                if nixl_agent_meta.block_strides is not None
++                else nixl_agent_meta.block_lens[i]
++            )
++            addrs = base_addr + rank_offset + block_arange * page_stride
+             parts.append(self._stack_descs(addrs, local_block_len, device_id))
+         return np.concatenate(parts)
+ 
+@@ -1564,15 +1652,48 @@ class NixlBaseConnectorWorker:
+             and len(nixl_agent_meta.kv_caches_base_addr) > num_local_regions
+         ):
+             # This worker holds a PP layer-slice; the PP=1 remote registered
+-            # the full model. Slice its regions to our layer window so the
+-            # logic below sees congruent local/remote lists.
+-            start = self._remote_region_offset
+-            end = start + num_local_regions
+-            assert len(nixl_agent_meta.kv_caches_base_addr) >= end
+-            nixl_agent_meta.kv_caches_base_addr = nixl_agent_meta.kv_caches_base_addr[
+-                start:end
+-            ]
+-            nixl_agent_meta.block_lens = nixl_agent_meta.block_lens[start:end]
++            # the full model. GLM DSA/indexer and DSpark layouts do not have a
++            # uniform number of regions per transformer layer, so arithmetic
++            # offsets are unsafe; select the exact region names instead.
++            if nixl_agent_meta.layer_names and self._registered_layer_names:
++                remote_by_name = {
++                    name: i for i, name in enumerate(nixl_agent_meta.layer_names)
++                }
++                try:
++                    indices = [
++                        remote_by_name[name]
++                        for name in self._registered_layer_names
++                    ]
++                except KeyError as error:
++                    raise RuntimeError(
++                        "Remote NIXL metadata is missing PP KV region "
++                        f"{error.args[0]!r}"
++                    ) from error
++                nixl_agent_meta.kv_caches_base_addr = [
++                    nixl_agent_meta.kv_caches_base_addr[i] for i in indices
++                ]
++                nixl_agent_meta.block_lens = [
++                    nixl_agent_meta.block_lens[i] for i in indices
++                ]
++                if nixl_agent_meta.block_strides is not None:
++                    nixl_agent_meta.block_strides = [
++                        nixl_agent_meta.block_strides[i] for i in indices
++                    ]
++                nixl_agent_meta.layer_names = [
++                    nixl_agent_meta.layer_names[i] for i in indices
++                ]
++            else:
++                start = self._remote_region_offset
++                end = start + num_local_regions
++                assert len(nixl_agent_meta.kv_caches_base_addr) >= end
++                nixl_agent_meta.kv_caches_base_addr = (
++                    nixl_agent_meta.kv_caches_base_addr[start:end]
++                )
++                nixl_agent_meta.block_lens = nixl_agent_meta.block_lens[start:end]
++                if nixl_agent_meta.block_strides is not None:
++                    nixl_agent_meta.block_strides = (
++                        nixl_agent_meta.block_strides[start:end]
++                    )
+ 
+         ### Register remote engine in TransferTopology (idempotent).
+         assert self.transfer_topo is not None
+@@ -1593,6 +1714,11 @@ class NixlBaseConnectorWorker:
+             transfer_topology=transfer_topo,
+             remote_tp_size=remote_tp_size,
+             group_spec_types=self._group_spec_types,
++            has_split_attention_regions=(
++                sum(_is_attention_spec(t) for t in self._group_spec_types) == 1
++                and any(self._region_is_mla)
++                and not all(self._region_is_mla)
++            ),
+         )
+ 
+         remote_agent_name = self.nixl_wrapper.add_remote_agent(
+@@ -1647,7 +1773,7 @@ class NixlBaseConnectorWorker:
+         split_key = (tp_ratio, remote_block_size)
+         if (
+             tp_ratio < 0
+-            and (not self.use_mla or len(plan.all_source_ranks) > 1)
++            and (not self._is_pure_mla() or len(plan.all_source_ranks) > 1)
+             and split_key not in self.src_xfer_handles_by_tp_ratio
+         ):
+             # Remote tp_size > local tp_size: read from multiple remote ranks.
+@@ -1835,9 +1961,7 @@ class NixlBaseConnectorWorker:
+             assert len(self.block_len_per_layer) == len(nixl_agent_meta.block_lens), (
+                 "Number of KV layers must match between prefill and decode"
+             )
+-            model_replicated = self.use_mla or self.transfer_topo.is_kv_replicated(
+-                remote_engine_id
+-            )
++            model_replicated = self.transfer_topo.is_kv_replicated(remote_engine_id)
+             total_kv_heads = self.transfer_topo.total_num_kv_heads
+             local_heads = self.transfer_topo.local_physical_heads
+             remote_heads = max(1, total_kv_heads // remote_tp_size)
+diff --git a/vllm/distributed/kv_transfer/kv_connector/v1/nixl/metadata.py b/vllm/distributed/kv_transfer/kv_connector/v1/nixl/metadata.py
+index ed2e030..2c65362 100644
+--- a/vllm/distributed/kv_transfer/kv_connector/v1/nixl/metadata.py
++++ b/vllm/distributed/kv_transfer/kv_connector/v1/nixl/metadata.py
+@@ -43,8 +43,10 @@ PUSH_REG_NOTIF_PREFIX = b"PUSH_REG:"
+ #      clock-sync timestamp
+ #   6: Validate EAGLE/MTP speculative configuration compatibility
+ #   7: Include NIXL transfer mode (push vs pull) in the compatibility hash
++#   8: Carry ordered KV region names for non-uniform PP region mapping
++#   9: Carry physical cache-block strides separately from transfer lengths
+ #
+-NIXL_CONNECTOR_VERSION: int = 7
++NIXL_CONNECTOR_VERSION: int = 9
+ 
+ 
+ @dataclass
+@@ -60,6 +62,8 @@ class NixlAgentMetadata:
+     ssm_sizes: tuple[int, int]
+     attn_backend_name: str
+     physical_blocks_per_logical_kv_block: int
++    layer_names: list[str] | None = None
++    block_strides: list[int] | None = None
+ 
+ 
+ @dataclass
+diff --git a/vllm/distributed/kv_transfer/kv_connector/v1/nixl/push_worker.py b/vllm/distributed/kv_transfer/kv_connector/v1/nixl/push_worker.py
+index 0721bf9..3bd697a 100644
+--- a/vllm/distributed/kv_transfer/kv_connector/v1/nixl/push_worker.py
++++ b/vllm/distributed/kv_transfer/kv_connector/v1/nixl/push_worker.py
+@@ -459,6 +459,25 @@ class NixlPushConnectorWorker(NixlBaseConnectorWorker):
+ 
+         logical_local = self._as_grouped_block_ids(local_block_ids)
+         logical_remote = self._as_grouped_block_ids(remote_block_ids)
++        if len(logical_local) != len(logical_remote):
++            raise RuntimeError(
++                f"P/D KV group mismatch for {request_id}: "
++                f"{len(logical_local)} local vs {len(logical_remote)} remote"
++            )
++        # P may run a private speculative suffix while D allocates only up to
++        # the public prompt boundary. Transfer exactly the logical prefix D
++        # requested; an extra P block must not shift or extend the copy.
++        clipped_local = []
++        for group_index, (local_group, remote_group) in enumerate(
++            zip(logical_local, logical_remote)
++        ):
++            if len(local_group) < len(remote_group):
++                raise RuntimeError(
++                    f"P has fewer KV blocks than D for {request_id} group "
++                    f"{group_index}: {len(local_group)} < {len(remote_group)}"
++                )
++            clipped_local.append(list(local_group[: len(remote_group)]))
++        logical_local = tuple(clipped_local)
+         physical_local = self._logical_to_kernel_block_ids(
+             logical_local, self._physical_blocks_per_logical_kv_block
+         )
+diff --git a/vllm/distributed/kv_transfer/kv_connector/v1/nixl/tp_mapping.py b/vllm/distributed/kv_transfer/kv_connector/v1/nixl/tp_mapping.py
+index b034b76..c75f9aa 100644
+--- a/vllm/distributed/kv_transfer/kv_connector/v1/nixl/tp_mapping.py
++++ b/vllm/distributed/kv_transfer/kv_connector/v1/nixl/tp_mapping.py
+@@ -12,7 +12,13 @@ from vllm.distributed.kv_transfer.kv_connector.utils import (
+     BlockIds,
+     TransferTopology,
+ )
+-from vllm.v1.kv_cache_interface import AttentionSpec, KVCacheSpec, MambaSpec
++from vllm.v1.kv_cache_interface import (
++    AttentionSpec,
++    KVCacheSpec,
++    MLAAttentionSpec,
++    MambaSpec,
++    SlidingWindowMLASpec,
++)
+ 
+ # ======================================================================
+ # Data structures
+@@ -36,6 +42,10 @@ def _is_ssm_spec(spec_type: type[KVCacheSpec]) -> bool:
+     return issubclass(spec_type, MambaSpec)
+ 
+ 
++def _is_mla_attention_spec(spec_type: type[KVCacheSpec]) -> bool:
++    return issubclass(spec_type, (MLAAttentionSpec, SlidingWindowMLASpec))
++
++
+ @dataclass(frozen=True)
+ class TPMapping:
+     """Complete local-to-remote TP mapping for one remote engine.
+@@ -66,6 +76,7 @@ def compute_tp_mapping(
+     transfer_topology: TransferTopology,
+     remote_tp_size: int,
+     group_spec_types: tuple[type[KVCacheSpec], ...],
++    has_split_attention_regions: bool = False,
+ ) -> TPMapping:
+     """Build the complete local-to-remote TP mapping.
+ 
+@@ -76,12 +87,13 @@ def compute_tp_mapping(
+     tp_size = transfer_topology.tp_size
+     total_num_kv_heads = transfer_topology.total_num_kv_heads
+     # --- Attention source ranks ---
+-    if transfer_topology.is_mla or tp_size >= remote_tp_size:
++    mla_attn_ranks = [tp_rank * remote_tp_size // tp_size]
++    if tp_size >= remote_tp_size:
+         # D (local TP) > P (remote TP): multiple local ranks read different chunks from
+         # *one* remote rank, corresponding to different kv heads.
+         # For MLA, we only need one remote since cache is duplicated. When P TP=k*TP k,
+         # this will spread mla ranks to read from remote k*tp_rank.
+-        attn_ranks = [tp_rank * remote_tp_size // tp_size]
++        full_attn_ranks = list(mla_attn_ranks)
+     else:
+         # P (remote TP) > D (local TP): one local rank
+         # reads from multiple remote ranks.
+@@ -92,7 +104,7 @@ def compute_tp_mapping(
+         start = tp_rank * abs_tp
+         heads = np.arange(start, start + abs_tp) * total_num_kv_heads // remote_tp_size
+         _, unique_idx = np.unique(heads, return_index=True)
+-        attn_ranks = (start + np.sort(unique_idx)).tolist()
++        full_attn_ranks = (start + np.sort(unique_idx)).tolist()
+ 
+     # --- SSM source ranks ---
+     has_ssm = any(_is_ssm_spec(t) for t in group_spec_types)
+@@ -101,21 +113,33 @@ def compute_tp_mapping(
+             abs_tp = remote_tp_size // tp_size
+             ssm_ranks = list(range(tp_rank * abs_tp, (tp_rank + 1) * abs_tp))
+         else:
+-            ssm_ranks = list(attn_ranks)
++            ssm_ranks = list(full_attn_ranks)
+     else:
+         ssm_ranks = []
+ 
+-    all_ranks = sorted(set(attn_ranks) | set(ssm_ranks))
+-
+     # --- Per-group ordered source ranks ---
+     source_ranks_per_group = tuple(
+-        tuple(ssm_ranks) if _is_ssm_spec(t) else tuple(attn_ranks)
++        tuple(ssm_ranks)
++        if _is_ssm_spec(t)
++        else tuple(mla_attn_ranks)
++        if _is_mla_attention_spec(t) and not has_split_attention_regions
++        else tuple(full_attn_ranks)
+         for t in group_spec_types
+     )
++    all_ranks = sorted({rank for ranks in source_ranks_per_group for rank in ranks})
+ 
+     # --- Attention head slots ---
+     head_to_slot: dict[int, int] = {}
+-    for i, r in enumerate(attn_ranks):
++    slot_ranks = (
++        full_attn_ranks
++        if any(
++            _is_attention_spec(t)
++            and (not _is_mla_attention_spec(t) or has_split_attention_regions)
++            for t in group_spec_types
++        )
++        else mla_attn_ranks
++    )
++    for i, r in enumerate(slot_ranks):
+         head_to_slot[r * total_num_kv_heads // remote_tp_size] = i
+     rank_to_attention_slot = {
+         r: head_to_slot.get(r * total_num_kv_heads // remote_tp_size, 0)
+@@ -123,12 +147,12 @@ def compute_tp_mapping(
+     }
+ 
+     # --- Rank offset factor ---
+-    if transfer_topology.is_mla or tp_size <= remote_tp_size:
++    if tp_size <= remote_tp_size:
+         # We don't index into remote for reading, no offset needed.
+         rank_offset_factor = 0
+     elif tp_size > total_num_kv_heads:
+         local_head = tp_rank * total_num_kv_heads // tp_size
+-        p_start = attn_ranks[0] * total_num_kv_heads // remote_tp_size
++        p_start = full_attn_ranks[0] * total_num_kv_heads // remote_tp_size
+         rank_offset_factor = local_head - p_start
+     else:
+         # D TP > P TP: we index into remote to read different heads depending on rank.
+diff --git a/vllm/model_executor/layers/fused_moe/experts/cutlass_moe.py b/vllm/model_executor/layers/fused_moe/experts/cutlass_moe.py
+index 80c6926..a053133 100644
+--- a/vllm/model_executor/layers/fused_moe/experts/cutlass_moe.py
++++ b/vllm/model_executor/layers/fused_moe/experts/cutlass_moe.py
+@@ -337,7 +337,12 @@ class CutlassExpertsFp8Base(mk.FusedMoEExpertsModular):
+     def _get_permute_scratch(self) -> MoEPermuteScratch | None:
+         if self._permute_scratch is None and moe_permute_unpermute_supported():
+             self._permute_scratch = MoEPermuteScratch(
+-                max_num_tokens=self.moe_config.max_num_tokens,
++                # DP profile runs materialize the global token budget on every
++                # worker, while FusedMoEConfig stores the per-DP budget.
++                max_num_tokens=(
++                    self.moe_config.max_num_tokens
++                    * self.moe_config.moe_parallel_config.dp_size
++                ),
+                 topk=self.moe_config.experts_per_token,
+                 num_experts=self.moe_config.num_experts,
+                 num_local_experts=self.moe_config.num_local_experts,
+@@ -1360,7 +1365,12 @@ class CutlassExpertsW4A8Fp8(mk.FusedMoEExpertsModular):
+     def _get_permute_scratch(self) -> MoEPermuteScratch | None:
+         if self._permute_scratch is None and moe_permute_unpermute_supported():
+             self._permute_scratch = MoEPermuteScratch(
+-                max_num_tokens=self.moe_config.max_num_tokens,
++                # DP profile runs materialize the global token budget on every
++                # worker, while FusedMoEConfig stores the per-DP budget.
++                max_num_tokens=(
++                    self.moe_config.max_num_tokens
++                    * self.moe_config.moe_parallel_config.dp_size
++                ),
+                 topk=self.moe_config.experts_per_token,
+                 num_experts=self.moe_config.num_experts,
+                 num_local_experts=self.moe_config.num_local_experts,
+diff --git a/vllm/model_executor/models/deepseek_v2.py b/vllm/model_executor/models/deepseek_v2.py
+index 81e941d..fa86b0b 100644
+--- a/vllm/model_executor/models/deepseek_v2.py
++++ b/vllm/model_executor/models/deepseek_v2.py
+@@ -1461,7 +1461,17 @@ class DeepseekV2Model(nn.Module):
+         else:
+             llama_4_scaling = None
+ 
+-        aux_hidden_states = []
++        # DSpark auxiliary layers can live on different pipeline stages while
++        # the drafter runs only on the last stage. Keep a stable, global slot
++        # for every requested layer and carry those slots in IntermediateTensors.
++        aux_layers = self.aux_hidden_state_layers
++        num_aux = len(aux_layers)
++        aux_slot_of = {layer_id: i for i, layer_id in enumerate(sorted(aux_layers))}
++        aux_slots: list[torch.Tensor | None] = [None] * num_aux
++        if num_aux > 0 and not get_pp_group().is_first_rank:
++            assert intermediate_tensors is not None
++            for i in range(num_aux):
++                aux_slots[i] = intermediate_tensors[f"aux_{i}"]
+         for idx, layer in enumerate(
+             islice(self.layers, self.start_layer, self.end_layer),
+             start=self.start_layer,
+@@ -1477,22 +1487,29 @@ class DeepseekV2Model(nn.Module):
+                 hidden_states, residual = combined_states.split(
+                     [self.hidden_size, self.hidden_size], dim=-1
+                 )
+-            if idx in self.aux_hidden_state_layers:
++            if idx in aux_slot_of:
+                 aux_hidden_state = hidden_states + residual
+                 if aux_hidden_state.shape[0] != positions.shape[0]:
+                     aux_hidden_state = tensor_model_parallel_all_gather(
+                         aux_hidden_state, 0
+                     )
+                     aux_hidden_state = aux_hidden_state[: positions.shape[0]]
+-                aux_hidden_states.append(aux_hidden_state)
++                aux_slots[aux_slot_of[idx]] = aux_hidden_state
+             hidden_states, residual = layer(
+                 positions, hidden_states, residual, llama_4_scaling
+             )
+ 
+         if not get_pp_group().is_last_rank:
+-            return IntermediateTensors(
+-                {"hidden_states": hidden_states, "residual": residual}
+-            )
++            out = {"hidden_states": hidden_states, "residual": residual}
++            if num_aux > 0:
++                zero: torch.Tensor | None = None
++                for i in range(num_aux):
++                    if aux_slots[i] is None:
++                        if zero is None:
++                            zero = torch.zeros_like(hidden_states)
++                        aux_slots[i] = zero
++                    out[f"aux_{i}"] = aux_slots[i]
++            return IntermediateTensors(out)
+ 
+         if hidden_states.shape[0] != positions.shape[0]:
+             combined_states = torch.cat([hidden_states, residual], dim=-1)
+@@ -1502,12 +1519,15 @@ class DeepseekV2Model(nn.Module):
+                 [self.hidden_size, self.hidden_size], dim=-1
+             )
+ 
+-        if self.end_layer in self.aux_hidden_state_layers:
+-            aux_hidden_states.append(hidden_states + residual)
++        if self.end_layer in aux_slot_of:
++            aux_slots[aux_slot_of[self.end_layer]] = hidden_states + residual
+ 
+         hidden_states, _ = self.norm(hidden_states, residual)
+-        if len(aux_hidden_states) > 0:
+-            return hidden_states, aux_hidden_states
++        if num_aux > 0:
++            assert all(aux is not None for aux in aux_slots), (
++                "missing auxiliary hidden-state slot on the last PP rank"
++            )
++            return hidden_states, aux_slots
+         return hidden_states
+ 
+     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
+@@ -1876,6 +1896,14 @@ class DeepseekV2ForCausalLM(
+ 
+     def set_aux_hidden_state_layers(self, layers: tuple[int, ...]) -> None:
+         self.model.aux_hidden_state_layers = layers
++        keys = ["hidden_states", "residual"] + [
++            f"aux_{i}" for i in range(len(layers))
++        ]
++        factory = make_empty_intermediate_tensors_factory(
++            keys, self.model.hidden_size
++        )
++        self.model.make_empty_intermediate_tensors = factory
++        self.make_empty_intermediate_tensors = factory
+ 
+     def get_eagle3_aux_hidden_state_layers(self) -> tuple[int, ...]:
+         num_layers = len(self.model.layers)
+diff --git a/vllm/model_executor/models/qwen3_dspark.py b/vllm/model_executor/models/qwen3_dspark.py
+index d15aa45..f9f024b 100644
+--- a/vllm/model_executor/models/qwen3_dspark.py
++++ b/vllm/model_executor/models/qwen3_dspark.py
+@@ -177,9 +177,9 @@ class Qwen3DSparkForCausalLM(DFlashQwen3ForCausalLM):
+         self.config = self.draft_model_config.hf_config
+         if getattr(self.config, "draft_vocab_size", None) is None:
+             self.config.draft_vocab_size = getattr(self.config, "vocab_size", None)
+-        target_layer_num = vllm_config.model_config.get_num_layers(
+-            vllm_config.parallel_config
+-        )
++        # Draft attention layer ids must follow the complete target model, not
++        # the number of target layers local to the last pipeline stage.
++        target_layer_num = vllm_config.model_config.get_total_num_hidden_layers()
+         self.model = Qwen3DSparkModel(
+             vllm_config=vllm_config,
+             prefix=maybe_prefix(prefix, "model"),
+diff --git a/vllm/v1/worker/gpu/model_runner.py b/vllm/v1/worker/gpu/model_runner.py
+index d68666c..82224d3 100644
+--- a/vllm/v1/worker/gpu/model_runner.py
++++ b/vllm/v1/worker/gpu/model_runner.py
+@@ -238,14 +238,23 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+         self.speculator = None
+         self.use_aux_hidden_state_outputs = False
+         self.num_speculative_steps = vllm_config.num_speculative_tokens
++        # Keep a TP=1 DSpark replica on every PP stage so draft-token state and
++        # PP collectives are initialized symmetrically. Only the last stage
++        # executes propose(). Inactive replicas deliberately do not advertise
++        # or bind draft KV cache (see get_kv_cache_spec/initialize_kv_cache).
++        self.replicated_dspark_over_pp = (
++            self.use_pp
++            and self.speculative_config is not None
++            and self.speculative_config.method == "dspark"
++        )
+         if self.speculative_config is not None:
+-            if self.is_last_pp_rank:
++            if self.is_last_pp_rank or self.replicated_dspark_over_pp:
+                 self.speculator = init_speculator(self.vllm_config, self.device)
+ 
+             if self.speculative_config.method in ("eagle3", "dflash", "dspark"):
+                 # Drafting may require auxiliary hidden states from target model outputs
+                 self.use_aux_hidden_state_outputs = True
+-                if self.use_pp:
++                if self.use_pp and self.speculative_config.method != "dspark":
+                     raise ValueError(
+                         f"{self.speculative_config.method} with pipeline parallel "
+                         "is not supported."
+@@ -490,7 +499,33 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+     def get_kv_cache_spec(self):
+         if self.is_encoder_only:
+             return {}
+-        return get_kv_cache_spec(self.vllm_config)
++        kv_cache_spec = get_kv_cache_spec(self.vllm_config)
++        if (
++            self.replicated_dspark_over_pp
++            and not self.is_last_pp_rank
++        ):
++            # The draft module is replicated on every PP stage to keep DSpark's
++            # runtime state and PP collectives symmetric, but only the last PP
++            # stage executes it. Advertising the inactive replicas' KV layers
++            # makes the global planner allocate draft pages on every stage and
++            # changes the NIXL P->D memory geometry. Keep the original, valid
++            # topology: target KV is sharded by PP and draft KV lives only on
++            # the last stage.
++            target_layer_count = self.model_config.get_total_num_hidden_layers()
++
++            def is_draft_layer(layer_name: str) -> bool:
++                parts = layer_name.split(".")
++                for index, part in enumerate(parts[:-1]):
++                    if part == "layers" and parts[index + 1].isdigit():
++                        return int(parts[index + 1]) >= target_layer_count
++                return False
++
++            kv_cache_spec = {
++                name: spec
++                for name, spec in kv_cache_spec.items()
++                if not is_draft_layer(name)
++            }
++        return kv_cache_spec
+ 
+     def initialize_kv_cache(self, kv_cache_config: KVCacheConfig) -> None:
+         kv_cache_config = deepcopy(kv_cache_config)
+@@ -591,7 +626,10 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+             varlen_decode=self.adaptive_verification is not None,
+         )
+         check_attention_cp_compatibility(self.vllm_config)
+-        if isinstance(self.speculator, DraftModelSpeculator):
++        active_speculator = (
++            not self.replicated_dspark_over_pp or self.is_last_pp_rank
++        )
++        if active_speculator and isinstance(self.speculator, DraftModelSpeculator):
+             # HACK(woosuk)
+             self.speculator.set_attn(
+                 self.model_state,
+@@ -600,7 +638,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+                 self.input_buffers,
+                 self.attn_groups,
+             )
+-        if self.speculator is not None:
++        if active_speculator and self.speculator is not None:
+             # After set_attn, so the speculator can size its cudagraph mode
+             # to its own attention support.
+             self.speculator.init_cudagraph_manager(cudagraph_mode)
+@@ -887,7 +925,9 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+                     use_aux_hidden_state_outputs=self.use_aux_hidden_state_outputs,
+                     lora_capture_hook=create_lora_capture_hook(self.lora_config, self),
+                 )
+-                if self.speculator is not None:
++                if self.speculator is not None and (
++                    not self.replicated_dspark_over_pp or self.is_last_pp_rank
++                ):
+                     with use_workspace_lane(self._draft_workspace_lane):
+                         self.speculator.capture()
+                 if self.adaptive_verification is not None:
+@@ -948,7 +988,9 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+         # For non-last PP ranks, update decode requests with sampler output from
+         # the prior step in which they were scheduled (pp_size steps ago).
+         if self.pp_handler is not None:
+-            outputs = self.pp_handler.get_prev_sampled_outputs()
++            outputs = self.pp_handler.get_prev_sampled_outputs(
++                self.req_states.draft_tokens
++            )
+             if outputs is not None:
+                 self.postprocess_sampled(**outputs)
+ 
+@@ -1840,6 +1882,10 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+                     mm_inputs=mm_inputs,
+                 )
+             self.req_states.draft_tokens[input_batch.idx_mapping] = draft_tokens
++            if self.pp_handler is not None:
++                self.pp_handler.broadcast_drafts(
++                    self.req_states.draft_tokens, input_batch
++                )
+             if self.adaptive_verification is not None:
+                 self.adaptive_verification.record_confidences(
+                     self.speculator.draft_token_confidence_probs, input_batch
+diff --git a/vllm/v1/worker/gpu/pp_utils.py b/vllm/v1/worker/gpu/pp_utils.py
+index 9b1786c..5ff9dea 100644
+--- a/vllm/v1/worker/gpu/pp_utils.py
++++ b/vllm/v1/worker/gpu/pp_utils.py
+@@ -30,6 +30,8 @@ class PendingRecv:
+     # Snapshot of slot generation counters at receive time, used to
+     # detect requests aborted since then.
+     gen_at_receive_np: np.ndarray  # [num_reqs]
++    # Draft proposals generated on the last PP rank for this delayed step.
++    draft_tokens: torch.Tensor | None = None  # [num_reqs, num_speculative_steps]
+ 
+ 
+ def compute_need_sampled_mask(input_batch: InputBatch) -> np.ndarray | None:
+@@ -65,6 +67,7 @@ class PPHandler:
+         self.is_last_rank = get_pp_group().is_last_rank
+         self.last_rank = get_pp_group().last_rank
+         self.max_sample_len = num_speculative_steps + 1
++        self.num_speculative_steps = num_speculative_steps
+         self.device = device
+         self.main_stream = torch.cuda.current_stream(device)
+         self.broadcast_stream = torch.cuda.Stream(device)
+@@ -87,10 +90,17 @@ class PPHandler:
+             group_desc="pp_broadcast"
+         )
+ 
++    def reset_after_warmup(self) -> None:
++        """Discard synthetic outputs left in the PP delay line by warmup."""
++        if not self.is_last_rank:
++            self.queue = deque([None] * get_pp_group().world_size)
++
+     def on_req_idx_freed(self, req_idx: int) -> None:
+         self.req_idx_gen_np[req_idx] += 1
+ 
+-    def get_prev_sampled_outputs(self) -> dict[str, torch.Tensor] | None:
++    def get_prev_sampled_outputs(
++        self, draft_tokens_to_update: torch.Tensor | None = None
++    ) -> dict[str, torch.Tensor] | None:
+         """Consume the entry from pp_size steps ago and wait for its recv event,
+         then filter out entries whose request was freed since `receive`.
+         """
+@@ -116,6 +126,17 @@ class PPHandler:
+             idx_mapping = async_copy_to_gpu(idx_mapping_np, device=self.device)
+ 
+         self.main_stream.wait_event(slot.event)
++        if slot.draft_tokens is not None and draft_tokens_to_update is not None:
++            draft_tokens = slot.draft_tokens
++            draft_idx_mapping = slot.idx_mapping
++            if exclude_mask.any():
++                keep = ~exclude_mask
++                keep_t = torch.as_tensor(keep, device=self.device)
++                draft_tokens = draft_tokens[keep_t]
++                draft_idx_mapping = async_copy_to_gpu(
++                    slot.idx_mapping_np[keep], device=self.device
++                )
++            draft_tokens_to_update[draft_idx_mapping] = draft_tokens
+         return dict(
+             sampled_tokens=slot.sampled_tokens,
+             num_sampled=slot.num_sampled,
+@@ -149,12 +170,25 @@ class PPHandler:
+             torch.distributed.broadcast(
+                 combined, src=self.last_rank, group=self.broadcast_group
+             )
++            draft_tokens = None
++            if self.num_speculative_steps > 0:
++                draft_tokens = torch.empty(
++                    num_reqs,
++                    self.num_speculative_steps,
++                    dtype=torch.int64,
++                    device=self.device,
++                )
++                torch.distributed.broadcast(
++                    draft_tokens, src=self.last_rank, group=self.broadcast_group
++                )
+             event = self.broadcast_stream.record_event()
+             num_sampled, num_rejected = combined.unbind(dim=0)
+             # Must record_stream since these were allocated on broadcast stream but
+             # later used on the main stream.
+             sampled_tokens.record_stream(self.main_stream)
+             combined.record_stream(self.main_stream)
++            if draft_tokens is not None:
++                draft_tokens.record_stream(self.main_stream)
+         self.queue[-1] = PendingRecv(
+             event,
+             sampled_tokens,
+@@ -164,9 +198,25 @@ class PPHandler:
+             input_batch.idx_mapping_np,
+             need_sampled_mask,
+             gen_at_receive_np,
++            draft_tokens,
+         )
+         return bool(need_sampled_mask.all())
+ 
++    def broadcast_drafts(
++        self, draft_tokens: torch.Tensor, input_batch: InputBatch
++    ) -> None:
++        """Broadcast proposals so earlier PP ranks embed the real draft ids."""
++        assert self.is_last_rank
++        if compute_need_sampled_mask(input_batch) is None:
++            return
++        with torch.cuda.stream(self.broadcast_stream):
++            self.broadcast_stream.wait_stream(self.main_stream)
++            send = draft_tokens[input_batch.idx_mapping].contiguous()
++            torch.distributed.broadcast(
++                send, src=self.last_rank, group=self.broadcast_group
++            )
++            send.record_stream(self.broadcast_stream)
++
+     def broadcast(
+         self,
+         sampled_token_ids: torch.Tensor,
+@@ -186,6 +236,10 @@ class PPHandler:
+ 
+         with torch.cuda.stream(self.broadcast_stream):
+             self.broadcast_stream.wait_stream(self.main_stream)
++            sampled_token_ids = torch.nn.functional.pad(
++                sampled_token_ids,
++                (0, self.max_sample_len - sampled_token_ids.shape[-1]),
++            )
+             torch.distributed.broadcast(
+                 sampled_token_ids.contiguous(),
+                 src=self.last_rank,
+diff --git a/vllm/v1/worker/gpu/spec_decode/dspark/speculator.py b/vllm/v1/worker/gpu/spec_decode/dspark/speculator.py
+index 19fc452..bfa8a88 100644
+--- a/vllm/v1/worker/gpu/spec_decode/dspark/speculator.py
++++ b/vllm/v1/worker/gpu/spec_decode/dspark/speculator.py
+@@ -40,6 +40,14 @@ logger = init_logger(__name__)
+ class DSparkSpeculator(DFlashSpeculator):
+     _speculator_name = "DSpark"
+ 
++    def init_cudagraph_manager(self, cudagraph_mode: CUDAGraphMode) -> None:
++        # The target remains CUDA-graph captured under PP. The last-stage-only
++        # draft runs eagerly because sharing the target InputBuffers would bake
++        # PP padding sentinels into the draft embedding indices on replay.
++        if self.vllm_config.parallel_config.pipeline_parallel_size > 1:
++            cudagraph_mode = CUDAGraphMode.NONE
++        super().init_cudagraph_manager(cudagraph_mode)
++
+     def __init__(self, vllm_config: VllmConfig, device: torch.device):
+         super().__init__(vllm_config, device)
+ 
+diff --git a/vllm/v1/worker/gpu/spec_decode/dspark/utils.py b/vllm/v1/worker/gpu/spec_decode/dspark/utils.py
+index 78ae392..d05b835 100644
+--- a/vllm/v1/worker/gpu/spec_decode/dspark/utils.py
++++ b/vllm/v1/worker/gpu/spec_decode/dspark/utils.py
+@@ -1,9 +1,12 @@
+ # SPDX-License-Identifier: Apache-2.0
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+ 
++import copy
++
+ import torch.nn as nn
+ 
+ from vllm.config import VllmConfig, replace
++from vllm.config.compilation import CUDAGraphMode, CompilationMode
+ from vllm.distributed.parallel_state import get_pp_group
+ from vllm.model_executor.model_loader import get_model
+ from vllm.v1.worker.gpu.spec_decode.eagle.utils import (
+@@ -27,21 +30,52 @@ def load_dspark_model(target_model: nn.Module, vllm_config: VllmConfig) -> nn.Mo
+         speculative_config.attention_backend or vllm_config.attention_config.backend
+     )
+ 
++    draft_cache_config = (
++        replace(
++            vllm_config.cache_config,
++            cache_dtype=speculative_config.kv_cache_dtype,
++        )
++        if speculative_config.kv_cache_dtype is not None
++        else vllm_config.cache_config
++    )
++    # The dense DSpark attention backend does not support the target MLA FP8
++    # cache layout. Its cache is small, so retain it in the native dtype.
++    if draft_cache_config.cache_dtype != "auto":
++        draft_cache_config = replace(draft_cache_config, cache_dtype="auto")
++
++    use_pp = vllm_config.parallel_config.pipeline_parallel_size > 1
++    draft_compilation_config = vllm_config.compilation_config
++    if use_pp:
++        # Keep the target CUDA graph enabled, but isolate the last-stage-local
++        # draft from target graph padding and compile buckets.
++        draft_compilation_config = replace(
++            draft_compilation_config,
++            mode=CompilationMode.NONE,
++            cudagraph_mode=CUDAGraphMode.NONE,
++        )
++
++    # The draft keeps a local TP1/PP1 execution topology, but its compile-cache
++    # identity must retain the enclosing worker's DP index. Otherwise every DP
++    # worker reads and writes rank_0_0 AOT artifacts in the same Inductor cache,
++    # which can produce cross-device artifacts that fail on the next restart.
++    draft_parallel_config = copy.copy(speculative_config.draft_parallel_config)
++    draft_parallel_config.data_parallel_rank = (
++        vllm_config.parallel_config.data_parallel_rank
++    )
++    draft_parallel_config.data_parallel_index = (
++        vllm_config.parallel_config.data_parallel_index
++    )
++
+     draft_vllm_config = replace(
+         vllm_config,
++        parallel_config=draft_parallel_config,
++        compilation_config=draft_compilation_config,
+         attention_config=replace(
+             vllm_config.attention_config,
+             use_non_causal=dflash_has_any_non_causal(draft_model_config.hf_config),
+             backend=draft_attention_backend,
+         ),
+-        cache_config=(
+-            replace(
+-                vllm_config.cache_config,
+-                cache_dtype=speculative_config.kv_cache_dtype,
+-            )
+-            if speculative_config.kv_cache_dtype is not None
+-            else vllm_config.cache_config
+-        ),
++        cache_config=draft_cache_config,
+     )
+     # VllmConfig post-init restores the target's quant config because the target
+     # config is retained for DSpark's target-layer metadata, so we must override it.
+@@ -52,8 +86,25 @@ def load_dspark_model(target_model: nn.Module, vllm_config: VllmConfig) -> nn.Mo
+             vllm_config=draft_vllm_config, model_config=draft_model_config
+         )
+ 
+-    if get_pp_group().world_size != 1:
+-        raise NotImplementedError("DSpark does not support pipeline parallelism.")
++    if use_pp:
++        for module in draft_model.modules():
++            if hasattr(module, "do_not_compile"):
++                module.do_not_compile = True
++
++        # Eager draft attention still executes inside the target runner's
++        # forward context. Publish its non-overlapping attention entries there.
++        target_forward_context = (
++            vllm_config.compilation_config.static_forward_context
++        )
++        for layer_name, layer in (
++            draft_vllm_config.compilation_config.static_forward_context.items()
++        ):
++            existing = target_forward_context.get(layer_name)
++            if existing is not None and existing is not layer:
++                raise ValueError(
++                    f"Duplicate target/draft attention layer: {layer_name}"
++                )
++            target_forward_context[layer_name] = layer
+ 
+     target_language_model = (
+         target_model.get_language_model()
+@@ -63,22 +114,25 @@ def load_dspark_model(target_model: nn.Module, vllm_config: VllmConfig) -> nn.Mo
+     target_inner = target_language_model.model
+     draft_inner = draft_model.model
+ 
+-    target_embed = getattr(target_inner, "embed_tokens", None)
+-    draft_embed = getattr(draft_inner, "embed_tokens", None)
+-    if target_embed is not None and _should_share(
+-        draft_model, "has_own_embed_tokens", draft_embed, target_embed
+-    ):
+-        if draft_embed is not None:
+-            del draft_inner.embed_tokens
+-        draft_inner.embed_tokens = target_embed
+-
+-    target_lm_head = get_target_lm_head(target_model, target_language_model)
+-    draft_lm_head = getattr(draft_model, "lm_head", None)
+-    if target_lm_head is not None and _should_share(
+-        draft_model, "has_own_lm_head", draft_lm_head, target_lm_head
+-    ):
+-        if draft_lm_head is not None:
+-            del draft_model.lm_head
+-        draft_model.lm_head = target_lm_head
++    # In PP mode the target's embedding is a PPMissingLayer on the last stage,
++    # while this complete local draft owns real embedding/head weights.
++    if get_pp_group().world_size == 1:
++        target_embed = getattr(target_inner, "embed_tokens", None)
++        draft_embed = getattr(draft_inner, "embed_tokens", None)
++        if target_embed is not None and _should_share(
++            draft_model, "has_own_embed_tokens", draft_embed, target_embed
++        ):
++            if draft_embed is not None:
++                del draft_inner.embed_tokens
++            draft_inner.embed_tokens = target_embed
++
++        target_lm_head = get_target_lm_head(target_model, target_language_model)
++        draft_lm_head = getattr(draft_model, "lm_head", None)
++        if target_lm_head is not None and _should_share(
++            draft_model, "has_own_lm_head", draft_lm_head, target_lm_head
++        ):
++            if draft_lm_head is not None:
++                del draft_model.lm_head
++            draft_model.lm_head = target_lm_head
+ 
+     return draft_model
+diff --git a/vllm/v1/worker/gpu_worker.py b/vllm/v1/worker/gpu_worker.py
+index a3b00aa..377ecf6 100644
+--- a/vllm/v1/worker/gpu_worker.py
++++ b/vllm/v1/worker/gpu_worker.py
+@@ -808,6 +808,8 @@ class Worker(WorkerBase):
+         if self.use_v2_model_runner:
+             # V2: Run full execute_model + sample_tokens to JIT compile triton kernels.
+             warmup_kernels(self.model_runner, self.execute_model, self.sample_tokens)
++            if self.model_runner.pp_handler is not None:
++                self.model_runner.pp_handler.reset_after_warmup()
+         elif get_pp_group().is_last_rank:
+             # V1: Warm up sampler and preallocate memory buffer for logits and other
+             # sampling related tensors of max possible shape to avoid memory

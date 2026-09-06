@@ -1461,7 +1461,17 @@ class DeepseekV2Model(nn.Module):
         else:
             llama_4_scaling = None
 
-        aux_hidden_states = []
+        # DSpark auxiliary layers can live on different pipeline stages while
+        # the drafter runs only on the last stage. Keep a stable, global slot
+        # for every requested layer and carry those slots in IntermediateTensors.
+        aux_layers = self.aux_hidden_state_layers
+        num_aux = len(aux_layers)
+        aux_slot_of = {layer_id: i for i, layer_id in enumerate(sorted(aux_layers))}
+        aux_slots: list[torch.Tensor | None] = [None] * num_aux
+        if num_aux > 0 and not get_pp_group().is_first_rank:
+            assert intermediate_tensors is not None
+            for i in range(num_aux):
+                aux_slots[i] = intermediate_tensors[f"aux_{i}"]
         for idx, layer in enumerate(
             islice(self.layers, self.start_layer, self.end_layer),
             start=self.start_layer,
@@ -1477,22 +1487,29 @@ class DeepseekV2Model(nn.Module):
                 hidden_states, residual = combined_states.split(
                     [self.hidden_size, self.hidden_size], dim=-1
                 )
-            if idx in self.aux_hidden_state_layers:
+            if idx in aux_slot_of:
                 aux_hidden_state = hidden_states + residual
                 if aux_hidden_state.shape[0] != positions.shape[0]:
                     aux_hidden_state = tensor_model_parallel_all_gather(
                         aux_hidden_state, 0
                     )
                     aux_hidden_state = aux_hidden_state[: positions.shape[0]]
-                aux_hidden_states.append(aux_hidden_state)
+                aux_slots[aux_slot_of[idx]] = aux_hidden_state
             hidden_states, residual = layer(
                 positions, hidden_states, residual, llama_4_scaling
             )
 
         if not get_pp_group().is_last_rank:
-            return IntermediateTensors(
-                {"hidden_states": hidden_states, "residual": residual}
-            )
+            out = {"hidden_states": hidden_states, "residual": residual}
+            if num_aux > 0:
+                zero: torch.Tensor | None = None
+                for i in range(num_aux):
+                    if aux_slots[i] is None:
+                        if zero is None:
+                            zero = torch.zeros_like(hidden_states)
+                        aux_slots[i] = zero
+                    out[f"aux_{i}"] = aux_slots[i]
+            return IntermediateTensors(out)
 
         if hidden_states.shape[0] != positions.shape[0]:
             combined_states = torch.cat([hidden_states, residual], dim=-1)
@@ -1502,12 +1519,15 @@ class DeepseekV2Model(nn.Module):
                 [self.hidden_size, self.hidden_size], dim=-1
             )
 
-        if self.end_layer in self.aux_hidden_state_layers:
-            aux_hidden_states.append(hidden_states + residual)
+        if self.end_layer in aux_slot_of:
+            aux_slots[aux_slot_of[self.end_layer]] = hidden_states + residual
 
         hidden_states, _ = self.norm(hidden_states, residual)
-        if len(aux_hidden_states) > 0:
-            return hidden_states, aux_hidden_states
+        if num_aux > 0:
+            assert all(aux is not None for aux in aux_slots), (
+                "missing auxiliary hidden-state slot on the last PP rank"
+            )
+            return hidden_states, aux_slots
         return hidden_states
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
@@ -1876,6 +1896,14 @@ class DeepseekV2ForCausalLM(
 
     def set_aux_hidden_state_layers(self, layers: tuple[int, ...]) -> None:
         self.model.aux_hidden_state_layers = layers
+        keys = ["hidden_states", "residual"] + [
+            f"aux_{i}" for i in range(len(layers))
+        ]
+        factory = make_empty_intermediate_tensors_factory(
+            keys, self.model.hidden_size
+        )
+        self.model.make_empty_intermediate_tensors = factory
+        self.make_empty_intermediate_tensors = factory
 
     def get_eagle3_aux_hidden_state_layers(self) -> tuple[int, ...]:
         num_layers = len(self.model.layers)

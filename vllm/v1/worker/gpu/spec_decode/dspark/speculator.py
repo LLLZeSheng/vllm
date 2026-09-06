@@ -40,6 +40,14 @@ logger = init_logger(__name__)
 class DSparkSpeculator(DFlashSpeculator):
     _speculator_name = "DSpark"
 
+    def init_cudagraph_manager(self, cudagraph_mode: CUDAGraphMode) -> None:
+        # The target remains CUDA-graph captured under PP. The last-stage-only
+        # draft runs eagerly because sharing the target InputBuffers would bake
+        # PP padding sentinels into the draft embedding indices on replay.
+        if self.vllm_config.parallel_config.pipeline_parallel_size > 1:
+            cudagraph_mode = CUDAGraphMode.NONE
+        super().init_cudagraph_manager(cudagraph_mode)
+
     def __init__(self, vllm_config: VllmConfig, device: torch.device):
         super().__init__(vllm_config, device)
 
