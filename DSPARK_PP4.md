@@ -106,6 +106,28 @@ DP profile 会在单 worker 上暂时物化全局 token budget。CUTLASS MoE per
 因此按 `max_num_tokens * dp_size` 分配，避免 profile 阶段的
 `n_token <= max_num_tokens` 断言失败。
 
+### 4P1D 高并发稳定性补丁
+
+PP4 单实例跑通后，扩展到 4 个 P 实例和 8 个 D engine 又暴露了低负载下不明显的
+竞态。这些修复也属于最终方案：
+
+- P 的 sampled-output broadcast 使用 side stream，而 DSpark 随后会在 main stream
+  复用输入缓冲区；proposal 前增加 stream fence，避免读到旧 request index。
+- async PP 的 padding row 可能保留 `-1` 或上一次请求的 token/position；每轮准备
+  Draft 输入前清零 padding，并在 embedding/Markov head 前做词表及位置边界保护。
+- scheduler 不再只为 structured output 拷回 Draft tokens；同步调度同样需要真实
+  Draft tokens，不能用 `-1` 占位，否则下一轮 speculative batch 会被污染。
+- 请求取消或参数校验失败后，NIXL completion 可能迟到；scheduler 对已经释放的
+  request id 幂等跳过，不让单个迟到通知击穿整个 EngineCore。
+- heartbeat 到达时刷新 remote engine activity；TTL eviction 与 handshake callback
+  使用同一把锁，remote-agent cleanup 允许重复调用，避免长任务期间错误淘汰仍活跃 P
+  或因并发清理触发断言。
+
+4P1D 代理先预留一个 D slot，再向 P 发起 prefill，避免 KV 已生成后长时间排队直至
+lease 过期；P/D 两段复用同一个 request/transfer id，并把 P 返回的 NIXL metadata
+原样传给 D。代理的 `/metrics` 会抓取所有 D endpoint，并用 `decode_endpoint` 标签
+保留来源，避免只看到 engine 0。
+
 ## 文件级改动
 
 | 文件 | 作用 |
@@ -117,6 +139,9 @@ DP profile 会在单 worker 上暂时物化全局 token budget。CUTLASS MoE per
 | `vllm/v1/worker/gpu/pp_utils.py` | sampled/Draft token broadcast 与 delay line |
 | `vllm/v1/worker/gpu_worker.py` | warmup 后重置 PP delay line |
 | `vllm/v1/worker/gpu/spec_decode/dspark/*` | Draft PP1 配置与 graph 隔离 |
+| `vllm/v1/worker/gpu/spec_decode/dflash/speculator.py` | 清理 PP Draft padding 与非法位置 |
+| `vllm/v1/worker/gpu/spec_decode/utils.py` | 始终向 scheduler 回传真实 Draft tokens |
+| `vllm/v1/core/sched/scheduler.py` | 幂等处理迟到/重复 KV completion |
 | `vllm/distributed/kv_transfer/kv_connector/v1/nixl/*` | 精确 region/stride/异构 TP 映射 |
 | `vllm/model_executor/layers/fused_moe/experts/cutlass_moe.py` | DP profile scratch 容量 |
 
@@ -162,6 +187,9 @@ vllm serve /path/to/GLM-5.2-NVFP4-W4A4-MG39-BNT3/v1 \
 1P1D 的完整 P/D 命令模板见
 `examples/dspark_pp4_1p1d/README.md`。
 
+4P1D 可重复启动同一 P 命令并使用不同 GPU、API port、side-channel port 和唯一
+`engine_id`，然后将全部 P/D endpoint 交给仓库内的 `pd_proxy.py`。
+
 ## 验证记录
 
 源码逐文件 SHA-256 已与三台实际运行节点一致：
@@ -175,6 +203,7 @@ vllm serve /path/to/GLM-5.2-NVFP4-W4A4-MG39-BNT3/v1 \
 - PP4 权重加载及服务健康检查；
 - `FULL_DECODE_ONLY` target CUDA Graph capture；
 - 4P1D NIXL handshake 与混合 KV region 传输；
+- 长请求期间 heartbeat/lease 保活，以及取消请求后的迟到 completion；
 - 8 个 D engine 均产生非零 Draft/accepted metrics；
 - 多轮业务请求无 waiting/error 收尾；
 - 修复后业务批次纯 DSpark 平均接受长度约 `3.0–3.6`，恢复到非 PP 对照量级。

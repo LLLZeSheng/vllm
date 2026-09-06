@@ -179,6 +179,12 @@ class DSparkSpeculator(DFlashSpeculator):
         # Anchor (bonus) token per request = the input id at query offset 0,
         # read via the precomputed persistent index (fixed buffer for capture).
         prev = self.input_buffers.input_ids[self._anchor_idx[:num_reqs]]
+        # Async PP can expose a not-yet-materialized anchor (-1) while a new
+        # request crosses the pipeline delay line.  It is padding, not a real
+        # vocabulary id; keep the transition head in range for that boundary
+        # step.  Subsequent proposals replace it with the sampled target id.
+        markov_vocab_size = self.model.model.markov_head.markov_w1.num_embeddings
+        prev = prev.masked_fill((prev < 0) | (prev >= markov_vocab_size), 0)
 
         for i in range(n_spec):
             # Sequential stage: Markov bias from the previously sampled token.
@@ -191,7 +197,9 @@ class DSparkSpeculator(DFlashSpeculator):
                 logits_i, idx_map[:, i], sample_pos[:, i], i
             )
             self.draft_tokens[:num_reqs, i] = draft_sampled_i
-            prev = draft_sampled_i
+            prev = draft_sampled_i.masked_fill(
+                (draft_sampled_i < 0) | (draft_sampled_i >= markov_vocab_size), 0
+            )
 
         if self.enable_adaptive_verification:
             confidence = self.model.compute_confidence(

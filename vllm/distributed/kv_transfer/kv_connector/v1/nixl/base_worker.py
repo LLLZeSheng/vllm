@@ -2415,6 +2415,14 @@ class NixlBaseConnectorWorker:
         Send heartbeat notifications to remote engines, extending lease on KV blocks.
         """
         for engine_id, hb_info in metadata.heartbeat_by_engine.items():
+            # A heartbeat proves that this remote engine is active. Refresh the
+            # TTL before _ensure_handshake() runs stale-engine eviction;
+            # otherwise a busy, long-lived P instance is incorrectly evicted
+            # once its original handshake timestamp exceeds engine_ttl.
+            with self._handshake_lock:
+                if engine_id in self._remote_agents:
+                    self._engine_last_active[engine_id] = time.perf_counter()
+
             # Proactive handshake (this request may still be in waiting queue) so
             # the **next** heartbeat for this remote can go through.
             if (
@@ -2677,9 +2685,13 @@ class NixlBaseConnectorWorker:
             return
 
         now = time.perf_counter()
-        for eid, last_active in list(self._engine_last_active.items()):
-            if now - last_active > self._engine_ttl:
-                self._cleanup_remote_engine(eid)
+        # Handshake completion updates _remote_agents and _engine_last_active
+        # from a callback thread. Serialize eviction with that callback so a
+        # freshly re-handshaked engine cannot be removed from a stale snapshot.
+        with self._handshake_lock:
+            for eid, last_active in list(self._engine_last_active.items()):
+                if now - last_active > self._engine_ttl:
+                    self._cleanup_remote_engine(eid)
 
     def _cleanup_remote_engine(
         self, engine_id: EngineId, *, log_eviction: bool = True
@@ -2690,12 +2702,14 @@ class NixlBaseConnectorWorker:
         all per-engine data structures. Used by both TTL eviction and
         shutdown.
         """
-        assert engine_id in self._remote_agents
-
         # Notif-only engines (push-mode D side) have no descriptor state.
         for handle in self.dst_xfer_side_handles.pop(engine_id, {}).values():
             self.nixl_wrapper.release_dlist_handle(handle)
-        for agent_name in self._remote_agents.pop(engine_id).values():
+        # Cleanup may race with TTL eviction, shutdown, or handshake failure.
+        # Make it idempotent instead of crashing the model worker when another
+        # path has already removed the remote-agent entry.
+        remote_agents = self._remote_agents.pop(engine_id, None)
+        for agent_name in (remote_agents or {}).values():
             self.nixl_wrapper.remove_remote_agent(agent_name)
 
         self.kv_caches_base_addr.pop(engine_id, None)

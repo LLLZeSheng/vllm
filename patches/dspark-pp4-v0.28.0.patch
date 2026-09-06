@@ -15,7 +15,7 @@ index 2b93113..193d4ca 100644
              distributed_executor_backend=target_parallel_config.distributed_executor_backend,
              max_parallel_loading_workers=target_parallel_config.max_parallel_loading_workers,
 diff --git a/vllm/distributed/kv_transfer/kv_connector/v1/nixl/base_worker.py b/vllm/distributed/kv_transfer/kv_connector/v1/nixl/base_worker.py
-index d2c0736..6668ca8 100644
+index d2c0736..e247a2f 100644
 --- a/vllm/distributed/kv_transfer/kv_connector/v1/nixl/base_worker.py
 +++ b/vllm/distributed/kv_transfer/kv_connector/v1/nixl/base_worker.py
 @@ -62,6 +62,7 @@ from vllm.distributed.kv_transfer.kv_connector.v1.ssm_conv_transfer_utils import
@@ -392,6 +392,56 @@ index d2c0736..6668ca8 100644
              total_kv_heads = self.transfer_topo.total_num_kv_heads
              local_heads = self.transfer_topo.local_physical_heads
              remote_heads = max(1, total_kv_heads // remote_tp_size)
+@@ -2291,6 +2415,14 @@ class NixlBaseConnectorWorker:
+         Send heartbeat notifications to remote engines, extending lease on KV blocks.
+         """
+         for engine_id, hb_info in metadata.heartbeat_by_engine.items():
++            # A heartbeat proves that this remote engine is active. Refresh the
++            # TTL before _ensure_handshake() runs stale-engine eviction;
++            # otherwise a busy, long-lived P instance is incorrectly evicted
++            # once its original handshake timestamp exceeds engine_ttl.
++            with self._handshake_lock:
++                if engine_id in self._remote_agents:
++                    self._engine_last_active[engine_id] = time.perf_counter()
++
+             # Proactive handshake (this request may still be in waiting queue) so
+             # the **next** heartbeat for this remote can go through.
+             if (
+@@ -2553,9 +2685,13 @@ class NixlBaseConnectorWorker:
+             return
+ 
+         now = time.perf_counter()
+-        for eid, last_active in list(self._engine_last_active.items()):
+-            if now - last_active > self._engine_ttl:
+-                self._cleanup_remote_engine(eid)
++        # Handshake completion updates _remote_agents and _engine_last_active
++        # from a callback thread. Serialize eviction with that callback so a
++        # freshly re-handshaked engine cannot be removed from a stale snapshot.
++        with self._handshake_lock:
++            for eid, last_active in list(self._engine_last_active.items()):
++                if now - last_active > self._engine_ttl:
++                    self._cleanup_remote_engine(eid)
+ 
+     def _cleanup_remote_engine(
+         self, engine_id: EngineId, *, log_eviction: bool = True
+@@ -2566,12 +2702,14 @@ class NixlBaseConnectorWorker:
+         all per-engine data structures. Used by both TTL eviction and
+         shutdown.
+         """
+-        assert engine_id in self._remote_agents
+-
+         # Notif-only engines (push-mode D side) have no descriptor state.
+         for handle in self.dst_xfer_side_handles.pop(engine_id, {}).values():
+             self.nixl_wrapper.release_dlist_handle(handle)
+-        for agent_name in self._remote_agents.pop(engine_id).values():
++        # Cleanup may race with TTL eviction, shutdown, or handshake failure.
++        # Make it idempotent instead of crashing the model worker when another
++        # path has already removed the remote-agent entry.
++        remote_agents = self._remote_agents.pop(engine_id, None)
++        for agent_name in (remote_agents or {}).values():
+             self.nixl_wrapper.remove_remote_agent(agent_name)
+ 
+         self.kv_caches_base_addr.pop(engine_id, None)
 diff --git a/vllm/distributed/kv_transfer/kv_connector/v1/nixl/metadata.py b/vllm/distributed/kv_transfer/kv_connector/v1/nixl/metadata.py
 index ed2e030..2c65362 100644
 --- a/vllm/distributed/kv_transfer/kv_connector/v1/nixl/metadata.py
@@ -706,8 +756,47 @@ index d15aa45..f9f024b 100644
          self.model = Qwen3DSparkModel(
              vllm_config=vllm_config,
              prefix=maybe_prefix(prefix, "model"),
+diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
+index e4a2132..f3f0f1d 100644
+--- a/vllm/v1/core/sched/scheduler.py
++++ b/vllm/v1/core/sched/scheduler.py
+@@ -2816,17 +2816,29 @@ class Scheduler(SchedulerInterface):
+         # KV Connector:: update recv and send status from last step.
+         for req_id in kv_connector_output.finished_recving or ():
+             logger.debug("Finished recving KV transfer for request %s", req_id)
+-            assert req_id in self.requests
+-            req = self.requests[req_id]
++            req = self.requests.get(req_id)
++            if req is None:
++                logger.debug(
++                    "Ignoring finished recving KV transfer for unknown request %s",
++                    req_id,
++                )
++                self.finished_recving_kv_req_ids.discard(req_id)
++                continue
+             if req.status == RequestStatus.WAITING_FOR_REMOTE_KVS:
+                 self.finished_recving_kv_req_ids.add(req_id)
+             else:
+                 assert RequestStatus.is_finished(req.status)
+-                self._free_blocks(self.requests[req_id])
++                self._free_blocks(req)
+         for req_id in kv_connector_output.finished_sending or ():
+             logger.debug("Finished sending KV transfer for request %s", req_id)
+-            assert req_id in self.requests
+-            self._free_blocks(self.requests[req_id])
++            req = self.requests.get(req_id)
++            if req is None:
++                logger.debug(
++                    "Ignoring finished sending KV transfer for unknown request %s",
++                    req_id,
++                )
++                continue
++            self._free_blocks(req)
+ 
+     def _update_requests_with_invalid_blocks(
+         self,
 diff --git a/vllm/v1/worker/gpu/model_runner.py b/vllm/v1/worker/gpu/model_runner.py
-index d68666c..82224d3 100644
+index d68666c..b3a2482 100644
 --- a/vllm/v1/worker/gpu/model_runner.py
 +++ b/vllm/v1/worker/gpu/model_runner.py
 @@ -238,14 +238,23 @@ class GPUModelRunner(LoRAModelRunnerMixin):
@@ -814,7 +903,22 @@ index d68666c..82224d3 100644
              if outputs is not None:
                  self.postprocess_sampled(**outputs)
  
-@@ -1840,6 +1882,10 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -1816,6 +1858,14 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+ 
+         if self.speculator is not None:
+             assert self.sampler is not None
++            if self.pp_handler is not None:
++                # PP sampled outputs are broadcast on a side stream.  DSpark
++                # immediately reuses runner input/state buffers on the main
++                # stream; under mixed chunked-prefill/decode load, allowing the
++                # broadcast and proposal to overlap can expose stale indices.
++                # Preserve collective order, but fence the tiny broadcast
++                # before launching the last-stage draft.
++                self.main_stream.wait_stream(self.pp_handler.broadcast_stream)
+             # Let the target override the hidden state fed to the drafter
+             # (e.g. DeepSeek V4 MTP needs the pre-hc_head residual). The
+             # target returns a persistent buffer sized at max_num_batched_tokens;
+@@ -1840,6 +1890,10 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                      mm_inputs=mm_inputs,
                  )
              self.req_states.draft_tokens[input_batch.idx_mapping] = draft_tokens
@@ -946,8 +1050,59 @@ index 9b1786c..5ff9dea 100644
              torch.distributed.broadcast(
                  sampled_token_ids.contiguous(),
                  src=self.last_rank,
+diff --git a/vllm/v1/worker/gpu/spec_decode/dflash/speculator.py b/vllm/v1/worker/gpu/spec_decode/dflash/speculator.py
+index eb5dc47..30c5b90 100644
+--- a/vllm/v1/worker/gpu/spec_decode/dflash/speculator.py
++++ b/vllm/v1/worker/gpu/spec_decode/dflash/speculator.py
+@@ -225,6 +225,22 @@ class DFlashSpeculator(DraftModelSpeculator):
+         num_tokens_across_dp: torch.Tensor | None,
+         cudagraph_runtime_mode: CUDAGraphMode = CUDAGraphMode.NONE,
+     ) -> torch.Tensor:
++        draft_input_ids = self.input_buffers.input_ids[:num_tokens]
++        if self.vllm_config.parallel_config.pipeline_parallel_size > 1:
++            # Async PP scheduling leaves -1 sentinels in draft padding rows.
++            # DSpark attention can still read those rows even though sampling
++            # only consumes real query positions, while embedding requires all
++            # indices to be in range. Keep padding neutral and deterministic.
++            draft_vocab_size = self.model.model.embed_tokens.num_embeddings
++            invalid_ids = (draft_input_ids < 0) | (
++                draft_input_ids >= draft_vocab_size
++            )
++            draft_input_ids.masked_fill_(invalid_ids, 0)
++            draft_positions = self.input_buffers.positions[:num_tokens]
++            invalid_positions = (draft_positions < 0) | (
++                draft_positions >= self.max_model_len
++            )
++            draft_positions.masked_fill_(invalid_positions, 0)
+         batch_descriptor = BatchDescriptor(num_tokens=num_tokens)
+         with set_forward_context(
+             attn_metadata,
+@@ -236,7 +252,7 @@ class DFlashSpeculator(DraftModelSpeculator):
+             batch_descriptor=batch_descriptor,
+         ):
+             last_hidden_states = self.model(
+-                input_ids=self.input_buffers.input_ids[:num_tokens],
++                input_ids=draft_input_ids,
+                 positions=self.input_buffers.positions[:num_tokens],
+                 inputs_embeds=None,
+             )
+@@ -372,6 +388,14 @@ class DFlashSpeculator(DraftModelSpeculator):
+         # The query slot mapping is written into the shared BlockTables slot_mappings.
+         # That buffer's address is what the captured CUDA graph reads from at replay.
+         assert self.draft_kv_cache_group_id >= 0
++        if self.vllm_config.parallel_config.pipeline_parallel_size > 1:
++            # prepare_dflash_inputs only overwrites active query positions. The
++            # draft may execute a padded batch, so erase stale/-1 values before
++            # materializing this step's real inputs.
++            self.input_buffers.input_ids.zero_()
++            # Target and draft padding shapes differ. Real query positions are
++            # overwritten below, but padded rows must remain valid RoPE indices.
++            self.input_buffers.positions.zero_()
+         # Support multiple draft KV cache groups by preparing inputs once for each
+         for i, gid in enumerate(self.draft_kv_cache_group_ids):
+             prepare_dflash_inputs(
 diff --git a/vllm/v1/worker/gpu/spec_decode/dspark/speculator.py b/vllm/v1/worker/gpu/spec_decode/dspark/speculator.py
-index 19fc452..bfa8a88 100644
+index 19fc452..13be20e 100644
 --- a/vllm/v1/worker/gpu/spec_decode/dspark/speculator.py
 +++ b/vllm/v1/worker/gpu/spec_decode/dspark/speculator.py
 @@ -40,6 +40,14 @@ logger = init_logger(__name__)
@@ -965,6 +1120,30 @@ index 19fc452..bfa8a88 100644
      def __init__(self, vllm_config: VllmConfig, device: torch.device):
          super().__init__(vllm_config, device)
  
+@@ -171,6 +179,12 @@ class DSparkSpeculator(DFlashSpeculator):
+         # Anchor (bonus) token per request = the input id at query offset 0,
+         # read via the precomputed persistent index (fixed buffer for capture).
+         prev = self.input_buffers.input_ids[self._anchor_idx[:num_reqs]]
++        # Async PP can expose a not-yet-materialized anchor (-1) while a new
++        # request crosses the pipeline delay line.  It is padding, not a real
++        # vocabulary id; keep the transition head in range for that boundary
++        # step.  Subsequent proposals replace it with the sampled target id.
++        markov_vocab_size = self.model.model.markov_head.markov_w1.num_embeddings
++        prev = prev.masked_fill((prev < 0) | (prev >= markov_vocab_size), 0)
+ 
+         for i in range(n_spec):
+             # Sequential stage: Markov bias from the previously sampled token.
+@@ -183,7 +197,9 @@ class DSparkSpeculator(DFlashSpeculator):
+                 logits_i, idx_map[:, i], sample_pos[:, i], i
+             )
+             self.draft_tokens[:num_reqs, i] = draft_sampled_i
+-            prev = draft_sampled_i
++            prev = draft_sampled_i.masked_fill(
++                (draft_sampled_i < 0) | (draft_sampled_i >= markov_vocab_size), 0
++            )
+ 
+         if self.enable_adaptive_verification:
+             confidence = self.model.compute_confidence(
 diff --git a/vllm/v1/worker/gpu/spec_decode/dspark/utils.py b/vllm/v1/worker/gpu/spec_decode/dspark/utils.py
 index 78ae392..d05b835 100644
 --- a/vllm/v1/worker/gpu/spec_decode/dspark/utils.py
@@ -1114,6 +1293,42 @@ index 78ae392..d05b835 100644
 +            draft_model.lm_head = target_lm_head
  
      return draft_model
+diff --git a/vllm/v1/worker/gpu/spec_decode/utils.py b/vllm/v1/worker/gpu/spec_decode/utils.py
+index e25672e..5ce0cdd 100644
+--- a/vllm/v1/worker/gpu/spec_decode/utils.py
++++ b/vllm/v1/worker/gpu/spec_decode/utils.py
+@@ -24,14 +24,12 @@ class DraftTokensHandler:
+     ) -> None:
+         self.req_ids = input_batch.req_ids
+         self.num_draft_tokens = draft_tokens.shape[1]
+-        if not input_batch.has_structured_output_reqs:
+-            # No draft token validation needs to be performed by
+-            # the scheduler for this batch.
+-            self.draft_tokens_np = None
+-            return
+-
+-        # For spec decoding + structured outputs, we must transfer the
+-        # draft tokens back to the scheduler for grammar validation.
++        # Always preserve the real draft tokens for the scheduler.  Besides
++        # structured-output grammar validation, synchronous scheduling also
++        # consumes this value in EngineCore.post_step().  Returning placeholder
++        # -1 tokens there corrupts the next speculative batch (and can trigger
++        # an out-of-range CUDA gather), which is especially easy to expose with
++        # pipeline parallel DSpark.
+         current_stream = torch.cuda.current_stream(self.device)
+         self.copy_stream.wait_stream(current_stream)
+         with torch.cuda.stream(self.copy_stream):
+@@ -47,8 +45,8 @@ class DraftTokensHandler:
+             self.copy_event.synchronize()
+             draft_token_ids = self.draft_tokens_np.tolist()
+         else:
+-            # This case only happens when async scheduling is disabled.
+-            draft_token_ids = [[-1] * self.num_draft_tokens for _ in self.req_ids]
++            # No speculative proposal was produced for this batch.
++            draft_token_ids = [[] for _ in self.req_ids]
+         return DraftTokenIds(self.req_ids, draft_token_ids)
+ 
+ 
 diff --git a/vllm/v1/worker/gpu_worker.py b/vllm/v1/worker/gpu_worker.py
 index a3b00aa..377ecf6 100644
 --- a/vllm/v1/worker/gpu_worker.py

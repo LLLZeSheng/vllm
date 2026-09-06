@@ -57,9 +57,27 @@ vllm serve "${TARGET}" \
   "{\"kv_connector\":\"NixlPushConnector\",\"kv_role\":\"kv_consumer\",\"engine_id\":\"D-$(date +%s)\",\"kv_connector_extra_config\":{\"push_registration_timeout\":300}}"
 ```
 
-The routing layer must send a request through P first and then route the same
-transfer identifier to D. The routing implementation is deployment-specific and
-is not part of this patch.
+## Start the multi-P/1D proxy
+
+Install the small proxy dependencies, then list every P and D API endpoint:
+
+```bash
+pip install fastapi httpx uvicorn
+
+python examples/dspark_pp4_1p1d/pd_proxy.py \
+  --host 0.0.0.0 --port 8000 \
+  --prefill 192.168.0.68:8100 192.168.0.68:8101 \
+            192.168.0.215:8102 192.168.0.215:8103 \
+  --decode 192.168.0.55:8200 192.168.0.55:8201 \
+           192.168.0.55:8202 192.168.0.55:8203 \
+           192.168.0.55:8204 192.168.0.55:8205 \
+           192.168.0.55:8206 192.168.0.55:8207 \
+  --max-decode-inflight 1
+```
+
+The proxy reserves D capacity before prefill, uses one transfer/request ID for
+both legs, forwards P's authoritative NIXL metadata to D, and aggregates metrics
+from every D endpoint at `http://proxy:8000/metrics`.
 
 ## Metrics
 

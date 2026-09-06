@@ -1858,6 +1858,14 @@ class GPUModelRunner(LoRAModelRunnerMixin):
 
         if self.speculator is not None:
             assert self.sampler is not None
+            if self.pp_handler is not None:
+                # PP sampled outputs are broadcast on a side stream.  DSpark
+                # immediately reuses runner input/state buffers on the main
+                # stream; under mixed chunked-prefill/decode load, allowing the
+                # broadcast and proposal to overlap can expose stale indices.
+                # Preserve collective order, but fence the tiny broadcast
+                # before launching the last-stage draft.
+                self.main_stream.wait_stream(self.pp_handler.broadcast_stream)
             # Let the target override the hidden state fed to the drafter
             # (e.g. DeepSeek V4 MTP needs the pre-hc_head residual). The
             # target returns a persistent buffer sized at max_num_batched_tokens;
