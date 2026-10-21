@@ -50,8 +50,12 @@ steps:
     - vllm/model_executor/layers/attention
     - vllm/v1/attention
     - tests/v1/attention
+    - vllm/model_executor/models/dspark_context_kv.py
+    - vllm/model_executor/models/glm_dspark_mla.py
+    - tests/models/test_dspark_mla.py
   commands:
     - pytest -v -s v1/attention
+    - pytest -v -s models/test_dspark_mla.py -k context_only_mla_store
   mirror:
     amd:
       label: ":amd: (MI355 DPX) V1 Attention Shard %N"

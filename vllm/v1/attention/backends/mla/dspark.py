@@ -3,9 +3,9 @@
 """Paged DSpark MLA with an anchor-relative window and block masks."""
 
 import torch
-import triton as tr
-import triton.language as tl
 
+from vllm.triton_utils import tl
+from vllm.triton_utils import triton as tr
 from vllm.v1.attention.backend import AttentionCGSupport, AttentionMetadataBuilder
 from vllm.v1.attention.backends.mla.triton_mla import TritonMLABackend
 
@@ -44,6 +44,8 @@ def partial(
     E,
     H: tl.constexpr,
     BS: tl.constexpr,
+    ZS: tl.constexpr,
+    ZT: tl.constexpr,
     TS: tl.constexpr,
     CAUSAL: tl.constexpr,
     WINDOW: tl.constexpr,
@@ -82,7 +84,10 @@ def partial(
         ids = base + ks
         block = tl.load(T + req * TS + ids // BS, ids < hi, 0)
         z = tl.load(
-            Z + (block[:, None] * BS + ids[:, None] % BS) * 576 + dims[None, :],
+            Z
+            + block[:, None].to(tl.int64) * ZS
+            + (ids[:, None] % BS).to(tl.int64) * ZT
+            + dims[None, :],
             (ids[:, None] < hi) & (dims[None, :] < 576),
             0,
         )
@@ -131,7 +136,8 @@ def merge(OUT, E, Y, H: tl.constexpr, SPLITS: tl.constexpr):
 
 
 def attention(q, z, table, starts, lengths, causal, window):
-    assert q.is_contiguous() and z.is_contiguous() and q.shape[-1] == z.shape[-1] == 576
+    assert q.is_contiguous() and q.shape[-1] == z.shape[-1] == 576
+    assert z.ndim == 3 and z.stride(-1) == 1
     tokens, heads, _ = q.shape
     splits = 16 if not window else 4
     tmp = torch.zeros(
@@ -151,6 +157,8 @@ def attention(q, z, table, starts, lengths, causal, window):
         lse,
         heads,
         z.shape[1],
+        z.stride(0),
+        z.stride(1),
         table.stride(0),
         causal,
         window or 0,

@@ -395,9 +395,10 @@ def test_dsv4_context_kv_uses_one_stacked_wkv_projection(monkeypatch):
 @pytest.mark.cpu_test
 def test_k3_dspark_mla_kv_cache_spec_groups_with_target_mla():
     """The draft's MLA layers must share a KV cache group with the target's."""
-    from vllm.model_executor.layers.attention.mla_attention import MLAAttention
     from vllm.models.kimi_k3.nvidia.mla import MultiHeadLatentAttention
     from vllm.v1.core.kv_cache_planning import _get_kv_cache_groups_uniform_page_size
+
+    from vllm.model_executor.layers.attention.mla_attention import MLAAttention
 
     vllm_config = SimpleNamespace(
         model_config=None, cache_config=SimpleNamespace(block_size=64)
@@ -423,3 +424,125 @@ def test_k3_dspark_mla_kv_cache_spec_groups_with_target_mla():
     groups = _get_kv_cache_groups_uniform_page_size(kv_cache_spec)
     assert len(groups) == 1
     assert len(groups[0].layer_names) == 29
+
+
+@pytest.mark.cpu_test
+@pytest.mark.parametrize("invalid", [None, "missing", "duplicate", "shape", "dtype"])
+def test_context_only_loader_requires_every_selected_weight(invalid):
+    """Never serve random context parameters or allocate ignored draft weights."""
+    from vllm.model_executor.models.dspark_context_kv import DSparkContextKVModel
+
+    model = DSparkContextKVModel.__new__(DSparkContextKVModel)
+    nn.Module.__init__(model)
+    model.is_mla = True
+    model.config = SimpleNamespace(num_hidden_layers=1)
+    model.fc = nn.Linear(8, 4, bias=False, dtype=torch.bfloat16)
+    model.hidden_norm = nn.LayerNorm(4, bias=False, dtype=torch.bfloat16)
+    layer = nn.Module()
+    layer.self_attn = nn.Module()
+    layer.self_attn.kv_a_proj_with_mqa = nn.Linear(
+        4, 6, bias=False, dtype=torch.bfloat16
+    )
+    layer.self_attn.kv_a_layernorm = nn.LayerNorm(4, bias=False, dtype=torch.bfloat16)
+    model.layers = nn.ModuleList([layer])
+    expected = {
+        name: torch.full_like(value, 0.25) for name, value in model.named_parameters()
+    }
+    weights = list(expected.items())
+    weights.append(("layers.0.mlp.gate_proj.weight", torch.ones(2, 2)))
+    if invalid == "missing":
+        weights.pop(0)
+    elif invalid == "duplicate":
+        weights.append(weights[0])
+    elif invalid == "shape":
+        weights[0] = (weights[0][0], torch.zeros(1, dtype=torch.bfloat16))
+    elif invalid == "dtype":
+        weights[0] = (weights[0][0], weights[0][1].float())
+    if invalid:
+        with pytest.raises(ValueError, match="context weight|Context weight"):
+            model.load_context_weights(iter(weights))
+    else:
+        model.load_context_weights(iter(weights))
+        assert dict(model.named_parameters()).keys() == expected.keys()
+        for name, value in model.named_parameters():
+            torch.testing.assert_close(value, expected[name], rtol=0, atol=0)
+
+
+@pytest.mark.cpu_test
+@pytest.mark.parametrize("role", [None, "kv_consumer", "kv_both", "kv_producer"])
+def test_context_only_rejects_non_producer_roles(role):
+    from vllm.model_executor.models.dspark_context_kv import context_kv_only
+
+    config = SimpleNamespace(
+        use_v2_model_runner=True,
+        kv_transfer_config=None if role is None else SimpleNamespace(kv_role=role),
+        speculative_config=SimpleNamespace(
+            prefill_context_kv_only=True,
+            method="dspark",
+            draft_model_config=SimpleNamespace(
+                architectures=["GlmDSparkMLAForCausalLM"], dtype=torch.bfloat16
+            ),
+            draft_parallel_config=SimpleNamespace(tensor_parallel_size=1),
+            target_parallel_config=SimpleNamespace(
+                tensor_parallel_size=1,
+                prefill_context_parallel_size=1,
+                decode_context_parallel_size=1,
+            ),
+        ),
+    )
+    if role == "kv_producer":
+        assert context_kv_only(config)
+    else:
+        with pytest.raises(ValueError, match="kv_producer"):
+            context_kv_only(config)
+
+
+@pytest.mark.parametrize("layout", ["contiguous", "BLHNC", "BNLC"])
+@pytest.mark.parametrize("neox", [False, True])
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.version.hip is not None,
+    reason="GLM MLA context insertion requires CUDA",
+)
+@torch.inference_mode()
+def test_context_only_mla_store_matches_complete_draft(layout, neox):
+    """Keep identical context KV including rotary keys and padded slot handling."""
+    from vllm.model_executor.models.dspark_context_kv import MLAContextKVAttention
+    from vllm.model_executor.models.glm_dspark_mla import (
+        GlmDSparkMLAAttention,
+        MLARMSNorm,
+    )
+
+    torch.manual_seed(17)
+    partial = MLAContextKVAttention.__new__(MLAContextKVAttention)
+    nn.Module.__init__(partial)
+    partial.kv_a_proj_with_mqa = nn.Linear(
+        8, 576, bias=False, device="cuda", dtype=torch.bfloat16
+    )
+    partial.kv_a_layernorm = MLARMSNorm(512, 1e-5).to(
+        device="cuda", dtype=torch.bfloat16
+    )
+    partial.rope_theta = 8e6
+    partial.is_neox_style = neox
+    partial.rope = GlmDSparkMLAAttention.rope.__get__(partial)
+    hidden = torch.randn(4, 8, device="cuda", dtype=torch.bfloat16)
+    positions = torch.tensor([0, 99, 800000, 1000000], device="cuda")
+    slots = torch.tensor([0, 17, -1, 32], device="cuda")
+    shape = (
+        (3, 16, 576)
+        if layout == "contiguous"
+        else ((3, 3, 16, 576) if layout == "BLHNC" else (3, 16, 3, 576))
+    )
+    backing = torch.full(shape, 123, device="cuda", dtype=torch.bfloat16)
+    cache = (
+        backing
+        if layout == "contiguous"
+        else (backing[:, 1] if layout == "BLHNC" else backing[:, :, 1])
+    )
+    expected = torch.full((3, 16, 576), 123, device="cuda", dtype=torch.bfloat16)
+    partial.attn = SimpleNamespace(
+        kv_cache=expected, _k_scale=torch.ones((), device="cuda")
+    )
+    GlmDSparkMLAAttention.store(partial, hidden, positions, slots)
+    partial.attn.kv_cache = cache
+    partial.store(hidden, positions, slots)
+    torch.testing.assert_close(cache, expected, rtol=0, atol=0)

@@ -19,6 +19,45 @@ class _NonCausalMLAMetadataBuilder(MLACommonMetadataBuilder[MLACommonMetadata]):
     supports_non_causal_multi_token_decode = True
 
 
+@pytest.mark.parametrize("layout", ["BLHNC", "BNLC", "large_offset"])
+@pytest.mark.parametrize("causal", [False, True])
+@pytest.mark.parametrize("window", [0, 8])
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.version.hip is not None,
+    reason="GLM DSpark MLA stride validation requires CUDA",
+)
+@torch.inference_mode()
+def test_glm_dspark_mla_reads_physical_cache_strides(layout, causal, window):
+    """PD layer views must not be read as a contiguous private cache."""
+    from vllm.v1.attention.backends.mla.dspark import attention
+
+    torch.manual_seed(41)
+    options = dict(device="cuda", dtype=torch.bfloat16)
+    values = torch.randn(3, 16, 576, **options) * 0.1
+    if layout == "BLHNC":
+        backing = torch.empty(3, 3, 16, 576, **options)
+        cache = backing[:, 1]
+    elif layout == "BNLC":
+        backing = torch.empty(3, 16, 3, 576, **options)
+        cache = backing[:, :, 1]
+    else:
+        free, _ = torch.accelerator.get_memory_info()
+        if free < 8 * 2**30:
+            pytest.skip("64-bit offset coverage requires 8GiB free GPU memory")
+        backing = torch.empty_strided(
+            (3, 16, 576), (2**30 + 16 * 576, 576, 1), **options
+        )
+        cache = backing
+    cache.copy_(values)
+    q = (torch.randn(4, 2, 576, **options) * 0.1).contiguous()
+    table = torch.tensor([[0, 2]], device="cuda", dtype=torch.int32)
+    starts = torch.tensor([0, 4], device="cuda", dtype=torch.int32)
+    lengths = torch.tensor([27], device="cuda", dtype=torch.int32)
+    expected = attention(q, values, table, starts, lengths, causal, window)
+    actual = attention(q, cache, table, starts, lengths, causal, window)
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
 class _CausalOnlyMLAMetadataBuilder(MLACommonMetadataBuilder[MLACommonMetadata]):
     pass
 

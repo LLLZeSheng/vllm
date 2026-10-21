@@ -253,6 +253,8 @@ class GlmDSparkMLAForCausalLM(Qwen3DSparkForCausalLM):
         super().__init__(vllm_config=vllm_config, prefix=prefix)
 
     def load_weights(self, weights):
+        if self.prefill_context_kv_only:
+            return super().load_weights(weights)
         seen = set()
 
         def tracked():
