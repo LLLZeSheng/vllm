@@ -1,0 +1,296 @@
+{
+  "report_date": "2026-10-21",
+  "upstream_pr": "https://github.com/vllm-project/vllm/pull/62923",
+  "gqa_feature_commit": "5b91926f9cc48440fc92622c821e30e7bd3132ee",
+  "gqa_base_commit": "817fa3518cd4bcc94b31e044c534c002e701c801",
+  "extension_candidate_commit": "ef73a6ae64a2ffb9daf93d2ea20e20b8c645b498",
+  "scope": {
+    "upstream_pr": "GQA only",
+    "mla_extension": "separate engineering validation; not included in upstream PR",
+    "business_benchmarks": "original integrated-runtime evaluations; not rerun after rebase",
+    "public_data": "aggregate metrics only; no original requests or internal locations"
+  },
+  "protocol": {
+    "dataset": "private 0831 business workload",
+    "fixed_pool_count": 800,
+    "sample_count": 300,
+    "reservoir_seed": 20260918,
+    "concurrency": 8,
+    "max_output_tokens": 1024,
+    "natural_eos": true,
+    "original_per_request_sampling_retained": true,
+    "speculative_tokens": 8
+  },
+  "gqa": {
+    "producer": {
+      "tp": 1,
+      "pp": 4,
+      "partition": [
+        22,
+        20,
+        20,
+        16
+      ]
+    },
+    "decode": {
+      "tp": 1,
+      "dp": 4,
+      "ep": true,
+      "decode_cuda_graph": true
+    },
+    "verification": "block",
+    "draft_sampling": "probabilistic",
+    "target_cache_dtype": "fp8",
+    "draft_cache_dtype": "fp8",
+    "baseline": {
+      "acceptance_length_including_target": 4.20612922705314,
+      "token_weighted_tpot_ms": 6.136376895216927,
+      "success_count": 300,
+      "error_count": 0,
+      "clean_counters": true,
+      "per_position": [
+        {
+          "position": 1,
+          "accepted_count": 26456,
+          "unconditional_retention": 0.798792270531401
+        },
+        {
+          "position": 2,
+          "accepted_count": 20767,
+          "unconditional_retention": 0.6270229468599033
+        },
+        {
+          "position": 3,
+          "accepted_count": 16297,
+          "unconditional_retention": 0.4920591787439614
+        },
+        {
+          "position": 4,
+          "accepted_count": 12818,
+          "unconditional_retention": 0.3870169082125604
+        },
+        {
+          "position": 5,
+          "accepted_count": 10135,
+          "unconditional_retention": 0.3060084541062802
+        },
+        {
+          "position": 6,
+          "accepted_count": 8112,
+          "unconditional_retention": 0.24492753623188407
+        },
+        {
+          "position": 7,
+          "accepted_count": 6490,
+          "unconditional_retention": 0.19595410628019325
+        },
+        {
+          "position": 8,
+          "accepted_count": 5112,
+          "unconditional_retention": 0.15434782608695652
+        }
+      ]
+    },
+    "context_only": {
+      "acceptance_length_including_target": 4.183596076096155,
+      "token_weighted_tpot_ms": 5.918965737398254,
+      "success_count": 300,
+      "error_count": 0,
+      "clean_counters": true,
+      "per_position": [
+        {
+          "position": 1,
+          "accepted_count": 25486,
+          "unconditional_retention": 0.7987588930328768
+        },
+        {
+          "position": 2,
+          "accepted_count": 19917,
+          "unconditional_retention": 0.6242203905099194
+        },
+        {
+          "position": 3,
+          "accepted_count": 15676,
+          "unconditional_retention": 0.49130284890462905
+        },
+        {
+          "position": 4,
+          "accepted_count": 12298,
+          "unconditional_retention": 0.38543266367881657
+        },
+        {
+          "position": 5,
+          "accepted_count": 9621,
+          "unconditional_retention": 0.301532579057887
+        },
+        {
+          "position": 6,
+          "accepted_count": 7621,
+          "unconditional_retention": 0.2388504090011596
+        },
+        {
+          "position": 7,
+          "accepted_count": 6096,
+          "unconditional_retention": 0.19105525433290502
+        },
+        {
+          "position": 8,
+          "accepted_count": 4864,
+          "unconditional_retention": 0.15244303757796096
+        }
+      ]
+    },
+    "draft_parameters_retained_bytes": 629159168,
+    "retained_parameter_tensor_count": 8,
+    "memory_components_bytes": {
+      "fc": 377487360,
+      "fused_kv": 251658240,
+      "hidden_norm": 12288,
+      "k_norm": 1280
+    },
+    "baseline_exclusive_draft_parameters_gib_rounded": 5.553,
+    "removed_duplicate_weight_buffer_mib": 240,
+    "model_load_profile_gib": {
+      "before": 119.58,
+      "after": 114.38
+    },
+    "checks": {
+      "same_decode_worker_processes": true,
+      "matched_request_hashes_and_prompt_tokens": true,
+      "unchanged_target_parameter_sizes": true,
+      "selected_parameter_allowlist": true
+    }
+  },
+  "mla_extension": {
+    "producer": {
+      "instance_count": 2,
+      "tp": 1,
+      "pp": 2,
+      "partition": [
+        38,
+        40
+      ]
+    },
+    "decode": {
+      "tp": 1,
+      "dp": 4,
+      "ep": true,
+      "eager": true
+    },
+    "verification": "standard",
+    "draft_sampling": "probabilistic",
+    "target_cache_dtype": "fp8",
+    "draft_cache_dtype": "bfloat16",
+    "latent_dimension": 512,
+    "rope_dimension": 64,
+    "corrected_tp8_baseline": {
+      "acceptance_length_including_target": 3.789691755515676,
+      "token_weighted_tpot_ms": 87.521577599
+    },
+    "full_pp2_initial": {
+      "acceptance_length_including_target": 3.741656872659688,
+      "token_weighted_tpot_ms": 59.25169727690577
+    },
+    "full_pp2_repeat": {
+      "acceptance_length_including_target": 3.7430167597765363,
+      "token_weighted_tpot_ms": 65.48908904834263
+    },
+    "context_only": {
+      "acceptance_length_including_target": 3.7829159333965072,
+      "token_weighted_tpot_ms": 60.73892379498091,
+      "success_count": 300,
+      "error_count": 0,
+      "clean_counters": true,
+      "per_position": [
+        {
+          "position": 1,
+          "accepted_count": 28678,
+          "unconditional_retention": 0.7764451062677677
+        },
+        {
+          "position": 2,
+          "accepted_count": 21481,
+          "unconditional_retention": 0.5815892784621632
+        },
+        {
+          "position": 3,
+          "accepted_count": 16107,
+          "unconditional_retention": 0.43609042913225937
+        },
+        {
+          "position": 4,
+          "accepted_count": 12014,
+          "unconditional_retention": 0.32527413022878027
+        },
+        {
+          "position": 5,
+          "accepted_count": 8956,
+          "unconditional_retention": 0.24248003248950858
+        },
+        {
+          "position": 6,
+          "accepted_count": 6750,
+          "unconditional_retention": 0.18275348585352647
+        },
+        {
+          "position": 7,
+          "accepted_count": 5025,
+          "unconditional_retention": 0.13604981724651416
+        },
+        {
+          "position": 8,
+          "accepted_count": 3776,
+          "unconditional_retention": 0.10223365371598754
+        }
+      ]
+    },
+    "draft_parameters_retained_bytes_per_producer": 412894208,
+    "full_producer_exclusive_draft_storage_gib": 5.918165,
+    "decimal_capacity": {
+      "purpose": "single synthetic capacity request; excluded from business acceptance",
+      "input_tokens": 1000000,
+      "output_tokens": 16,
+      "total_context_tokens": 1000016,
+      "producer_max_context": 1008000,
+      "producer_batch_tokens": 512,
+      "producer_kv_budget_gib": 32,
+      "ttft_seconds": 265.9871620010017,
+      "elapsed_seconds": 268.4523868059987,
+      "http_status": 200,
+      "complete_stream": true,
+      "min_observed_producer_final_stage_free_mib": 1844
+    },
+    "binary_total_context_capacity": {
+      "purpose": "single synthetic capacity request; excluded from business acceptance",
+      "input_tokens": 1048560,
+      "output_tokens": 16,
+      "total_context_tokens": 1048576,
+      "producer_max_context": 1048576,
+      "producer_batch_tokens": 256,
+      "producer_kv_budget_gib": 32.75,
+      "ttft_seconds": 341.07300796100026,
+      "elapsed_seconds": 345.7740754820006,
+      "http_status": 200,
+      "complete_stream": true,
+      "min_observed_producer_final_stage_free_mib": 2068
+    }
+  },
+  "tests": {
+    "gqa_only": {
+      "passed": 14,
+      "kind": "selected CPU regression tests; rerun after rebase"
+    },
+    "separate_extension_candidate": {
+      "passed": 27,
+      "kind": "selected CPU and GPU correctness tests; separate suite, not additive to GQA test count"
+    }
+  },
+  "measurement_limits": [
+    "No statistical-equivalence or bitwise-output-equivalence claim",
+    "No guaranteed fixed speedup claim",
+    "GQA and MLA absolute latency/quality are not a controlled architecture comparison",
+    "Capacity measurements are single requests, not multiple concurrent 1M requests",
+    "Periodic NVML snapshots are not continuous peak measurements",
+    "Draft-exclusive parameter bytes exclude target, KV cache and temporary runtime storage"
+  ]
+}
