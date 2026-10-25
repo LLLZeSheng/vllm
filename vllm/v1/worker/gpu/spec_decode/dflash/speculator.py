@@ -60,6 +60,17 @@ class DFlashSpeculator(DraftModelSpeculator):
 
         # Each request emits exactly (bonus + N mask) query tokens per step.
         self.num_query_per_req = 1 + self.num_speculative_steps
+        # The target token budget need not cover a full parallel draft for
+        # every request (including padded adaptive-verification dummy rows).
+        # Keep target/context limits unchanged; size query storage separately.
+        self.input_buffers = InputBuffers(
+            max_num_reqs=self.max_num_reqs,
+            max_num_tokens=max(
+                self.max_num_tokens,
+                self.max_num_reqs * self.num_query_per_req,
+            ),
+            device=device,
+        )
 
         self.parallel_drafting_token_id = get_parallel_drafting_token_id(
             self.draft_model_config.hf_config
@@ -213,6 +224,18 @@ class DFlashSpeculator(DraftModelSpeculator):
         ]
         assert self.draft_kv_cache_group_ids, "No draft attention groups found."
         self.draft_kv_cache_group_id = self.draft_kv_cache_group_ids[0]
+
+        # The query forward shares the target's slot-mapping storage, but can
+        # emit more query rows than the target's scheduling budget. Widen it
+        # before any graphs capture its address; target forwards keep slicing
+        # their original token count.
+        query_capacity = self.input_buffers.input_ids.shape[0]
+        if self.block_tables.slot_mappings.shape[1] < query_capacity:
+            old_mappings = self.block_tables.slot_mappings
+            self.block_tables.slot_mappings = old_mappings.new_zeros(
+                (old_mappings.shape[0], query_capacity)
+            )
+            self.block_tables.max_num_batched_tokens = query_capacity
 
         # Per-group context slot buffers for the precompute (one row per group).
         self._context_slot_mappings = torch.zeros(
@@ -390,6 +413,9 @@ class DFlashSpeculator(DraftModelSpeculator):
                 self.hidden_states[:num_target_tokens],
                 self.context_positions[:num_target_tokens],
             )
+            if getattr(self, "prefill_context_kv_only", False):
+                self.draft_tokens[:num_reqs].fill_(-1)
+                return self.draft_tokens[:num_reqs]
             # DFlash processes all speculative tokens in one forward pass,
             # so the real token count is num_query_tokens.
             self._prepare_eplb_forward(num_query_tokens)
@@ -482,6 +508,10 @@ class DFlashSpeculator(DraftModelSpeculator):
                 self._precompute_context_kv(num_context, num_target_tokens)
         else:
             self._precompute_context_kv(0, num_target_tokens, dummy_run)
+
+        if getattr(self, "prefill_context_kv_only", False):
+            self.draft_tokens[:num_reqs].fill_(-1)
+            return self.draft_tokens[:num_reqs]
 
         # Rebuild the draft attention metadata even when replaying the FULL
         # graph so that any attention metadata builder state is updated.

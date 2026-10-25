@@ -1,0 +1,71 @@
+{
+  "time": 1792900575.4929564,
+  "checks": [
+    {
+      "hook": "ruff-check",
+      "returncode": 0,
+      "output": "ruff check...............................................................Passed\n"
+    },
+    {
+      "hook": "ruff-format",
+      "returncode": 0,
+      "output": "ruff format..............................................................Passed\n"
+    },
+    {
+      "hook": "typos",
+      "returncode": 0,
+      "output": "typos....................................................................Passed\n"
+    },
+    {
+      "hook": "markdownlint-cli2",
+      "returncode": 0,
+      "output": "markdownlint-cli2........................................................Passed\n"
+    },
+    {
+      "hook": "check-spdx-header",
+      "returncode": 0,
+      "output": "Check SPDX headers.......................................................Passed\n"
+    },
+    {
+      "hook": "check-forbidden-imports",
+      "returncode": 0,
+      "output": "Check for forbidden imports..............................................Passed\n"
+    },
+    {
+      "hook": "check-torch-cuda-call",
+      "returncode": 0,
+      "output": "Prevent new 'torch.cuda' APIs call.......................................Passed\n"
+    },
+    {
+      "hook": "validate-config",
+      "returncode": 0,
+      "output": "Validate configuration has default values and that each field has a docstring.......................Passed\n"
+    },
+    {
+      "hook": "check-boolean-context-manager",
+      "returncode": 0,
+      "output": "Check for boolean ops in with-statements.................................Passed\n"
+    },
+    {
+      "hook": "check-root-lazy-imports",
+      "returncode": 0,
+      "output": "Check root lazy imports..................................................Passed\n"
+    },
+    {
+      "hook": "check-filenames",
+      "returncode": 0,
+      "output": "Check for spaces in all filenames........................................Passed\n"
+    },
+    {
+      "hook": "check-test-tethering",
+      "returncode": 0,
+      "output": "Check new tests are wired into Buildkite CI..........(no files to check)Skipped\n- hook id: check-test-tethering\n"
+    }
+  ],
+  "cpu_regressions": {
+    "command": "CUDA_VISIBLE_DEVICES=-1 .venv/bin/python examples/deployment/pp2_pdco/test_regressions.py",
+    "returncode": 0,
+    "summary": "test_context_loader_copies_k_and_v_to_distinct_fused_slices (__main__.RegressionTests.test_context_loader_copies_k_and_v_to_distinct_fused_slices) ... ok\ntest_context_loader_rejects_incomplete_duplicate_or_bad_weights (__main__.RegressionTests.test_context_loader_rejects_incomplete_duplicate_or_bad_weights) ... ok\ntest_launcher_keeps_pdco_on_producer_and_complete_draft_on_decode (__main__.RegressionTests.test_launcher_keeps_pdco_on_producer_and_complete_draft_on_decode) ... ok\ntest_pdco_rejects_decode_or_combined_kv_roles (__main__.RegressionTests.test_pdco_rejects_decode_or_combined_kv_roles) ... ok\ntest_pp2_and_pp4_keep_identical_swa_layer_groups_on_decode (__main__.RegressionTests.test_pp2_and_pp4_keep_identical_swa_layer_groups_on_decode) ... ok\n\n----------------------------------------------------------------------\nRan 5 tests in 0.038s\n\nOK\n"
+  },
+  "new_gpu_evaluation": false
+}

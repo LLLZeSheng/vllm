@@ -42,6 +42,9 @@ class DSparkSpeculator(DFlashSpeculator):
 
     def __init__(self, vllm_config: VllmConfig, device: torch.device):
         super().__init__(vllm_config, device)
+        from vllm.model_executor.models.dspark_context_kv import context_kv_only
+
+        self.prefill_context_kv_only = context_kv_only(vllm_config)
 
         # Whether to sample from the anchor position. When True, uses anchor-as-first
         # (N slots, each position predicts the next token). When False, uses 1+N
@@ -80,6 +83,15 @@ class DSparkSpeculator(DFlashSpeculator):
         )
 
         self.use_confidence_head: bool = False
+
+    def init_cudagraph_manager(self, cudagraph_mode: CUDAGraphMode) -> None:
+        if self.prefill_context_kv_only:
+            cudagraph_mode = CUDAGraphMode.NONE
+        super().init_cudagraph_manager(cudagraph_mode)
+
+    def capture(self) -> None:
+        if not self.prefill_context_kv_only:
+            super().capture()
 
     def load_draft_model(
         self,

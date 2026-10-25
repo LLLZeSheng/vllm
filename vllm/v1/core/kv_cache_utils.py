@@ -2695,8 +2695,9 @@ def _cap_pp_sliding_window_group_width(
     when a worker's SWA pages exceed its other groups' page bytes.
     """
     # A non-PP decode worker must retain the same transfer group identities
-    # as the PP prefill workers. The deployment sets this to 2 for the four
-    # draft sliding-window layers; other runs keep the default PP-only behavior.
+    # as the PP prefill workers. Explicitly match the producer's split count:
+    # e.g. 2 for four SWA layers on PP4, 3 for five SWA layers on PP4,
+    # or 1 when a PP2 stage's full group is wide enough for all SWA layers.
     forced_split = int(os.environ.get("VLLM_SWA_PD_GROUP_SPLIT", "1"))
     if len(worker_specs) < 2 and forced_split == 1:
         return groups
@@ -2713,9 +2714,6 @@ def _cap_pp_sliding_window_group_width(
             continue
 
         num_groups = forced_split if len(worker_specs) == 1 else 1
-        if len(worker_specs) == 1 and len(group.layer_names) != 4:
-            # Keep the override narrowly scoped to the DSpark draft SWA group.
-            num_groups = 1
         for worker_spec in worker_specs:
             local_names = [name for name in group.layer_names if name in worker_spec]
             if len(local_names) < 2:
@@ -2763,9 +2761,7 @@ def _cap_pp_sliding_window_group_width(
             group_spec = UniformTypeKVCacheSpecs.from_specs(specs)
             assert group_spec is not None
             result.append(
-                KVCacheGroupSpec(
-                    names, group_spec, is_eagle_group=group.is_eagle_group
-                )
+                KVCacheGroupSpec(names, group_spec, is_eagle_group=group.is_eagle_group)
             )
         logger.info(
             "Split PP sliding-window KV group of %d layers into %d groups",
@@ -2841,10 +2837,9 @@ def get_kv_cache_configs(
     # After this call, merged_kv_cache_specs may be modified in-place.
     global_kv_cache_groups = get_kv_cache_groups(vllm_config, merged_kv_cache_specs)
     if (
-        (vllm_config.parallel_config.pipeline_parallel_size > 1
-         or os.environ.get("VLLM_SWA_PD_GROUP_SPLIT") is not None)
-        and vllm_config.cache_config.get_resolved_kv_cache_layout().is_block_outermost
-    ):
+        vllm_config.parallel_config.pipeline_parallel_size > 1
+        or os.environ.get("VLLM_SWA_PD_GROUP_SPLIT") is not None
+    ) and vllm_config.cache_config.get_resolved_kv_cache_layout().is_block_outermost:
         global_kv_cache_groups = _cap_pp_sliding_window_group_width(
             global_kv_cache_groups, kv_cache_specs
         )

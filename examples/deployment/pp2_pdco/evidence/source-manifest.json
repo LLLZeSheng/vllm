@@ -1,0 +1,38 @@
+{
+  "base_commit": "65bad2204be2c848652e6f2c1c888239212ed2f2",
+  "base_repository": "https://github.com/Ar-zhou/vllm-zh",
+  "base_branch": "deploy/pp4-dspark-swa-1p1d-v031",
+  "description": "Executed GQA runtime sources with packaging-only license/import/format normalization; no algorithm changes",
+  "files": [
+    {
+      "file": "vllm/model_executor/models/qwen3_dspark.py",
+      "runtime_sha256": "9703f5c9257d9c52f4a3f9c1680035cc4e2a5340784874eb803c9a98be34ea39",
+      "packaged_sha256": "9703f5c9257d9c52f4a3f9c1680035cc4e2a5340784874eb803c9a98be34ea39"
+    },
+    {
+      "file": "vllm/model_executor/models/dspark_context_kv.py",
+      "runtime_sha256": "7e22df4df7d4d0a3b2f649ac1c8bf2eba7df3ce1e17dfb29ab92e006121ff222",
+      "packaged_sha256": "834d270ed113ac4622dce51467b547cef9553731d49e1fc3f5a2294e15b39cf4"
+    },
+    {
+      "file": "vllm/v1/core/kv_cache_utils.py",
+      "runtime_sha256": "965aba0c3782599908b9053c30ba6b1762eaebd8ea2291c0a7a3780fa2d65b45",
+      "packaged_sha256": "b4b093e7e1e4bfb4c69bd95d94337e949650978b34f51a1f0994db9fcb81690c"
+    },
+    {
+      "file": "vllm/v1/worker/gpu/spec_decode/dflash/speculator.py",
+      "runtime_sha256": "71341612bdf380af51e8666a5867ef4754e40cddb780869d9640f5f9d0836e23",
+      "packaged_sha256": "71341612bdf380af51e8666a5867ef4754e40cddb780869d9640f5f9d0836e23"
+    },
+    {
+      "file": "vllm/v1/worker/gpu/spec_decode/dspark/speculator.py",
+      "runtime_sha256": "d34d82212bcf16fce807322c6c8c509ae0961c3198e74149d296e3941a745494",
+      "packaged_sha256": "d34d82212bcf16fce807322c6c8c509ae0961c3198e74149d296e3941a745494"
+    },
+    {
+      "file": "vllm/v1/worker/gpu/spec_decode/dspark/utils.py",
+      "runtime_sha256": "a8ab76ceda681d7bf0d949e0766a5c466634655496d893010c447d431c30ffc6",
+      "packaged_sha256": "a8ab76ceda681d7bf0d949e0766a5c466634655496d893010c447d431c30ffc6"
+    }
+  ]
+}

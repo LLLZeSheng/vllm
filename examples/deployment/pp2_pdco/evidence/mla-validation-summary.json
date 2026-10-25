@@ -1,0 +1,67 @@
+{
+  "business": {
+    "success_count": 300,
+    "error_count": 0,
+    "clean_counters": true,
+    "acceptance_length_including_base": 3.7829159333965072,
+    "token_weighted_tpot_s": 0.060738923794980915,
+    "per_position": [
+      {
+        "position": 1,
+        "accepted_tokens": 28678.0,
+        "accepted_per_round": 0.7764451062677677
+      },
+      {
+        "position": 2,
+        "accepted_tokens": 21481.0,
+        "accepted_per_round": 0.5815892784621632
+      },
+      {
+        "position": 3,
+        "accepted_tokens": 16107.0,
+        "accepted_per_round": 0.43609042913225937
+      },
+      {
+        "position": 4,
+        "accepted_tokens": 12014.0,
+        "accepted_per_round": 0.32527413022878027
+      },
+      {
+        "position": 5,
+        "accepted_tokens": 8956.0,
+        "accepted_per_round": 0.24248003248950858
+      },
+      {
+        "position": 6,
+        "accepted_tokens": 6750.0,
+        "accepted_per_round": 0.18275348585352647
+      },
+      {
+        "position": 7,
+        "accepted_tokens": 5025.0,
+        "accepted_per_round": 0.13604981724651416
+      },
+      {
+        "position": 8,
+        "accepted_tokens": 3776.0,
+        "accepted_per_round": 0.10223365371598754
+      }
+    ]
+  },
+  "full_repeat": {
+    "acceptance_length_including_base": 3.7430167597765363,
+    "token_weighted_tpot_s": 0.06548908904834264
+  },
+  "full_initial": {
+    "acceptance_length_including_base": 3.741656872659688,
+    "token_weighted_tpot_s": 0.059251697276905775
+  },
+  "capacity": {
+    "input_tokens_requested": 1000000,
+    "max_output_tokens": 16,
+    "model_max_context": 1008000,
+    "status": "completed_successfully"
+  },
+  "measurement_date": "2026-10-21",
+  "retested_during_packaging": false
+}
