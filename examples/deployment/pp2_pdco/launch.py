@@ -61,8 +61,7 @@ def build(args):
         "attention_backend": "FLASH_ATTN",
         "kv_cache_dtype": "fp8" if args.draft_kind == "gqa" else "bfloat16",
     }
-    if args.draft_kind == "mla":
-        spec["prefill_context_kv_only"] = pdco
+    spec["prefill_context_kv_only"] = pdco
     connector = {
         "kv_connector": "MooncakeConnector",
         "kv_role": "kv_producer" if producer else "kv_consumer",

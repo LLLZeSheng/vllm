@@ -1,5 +1,5 @@
 {
-  "time": 1792900575.4929564,
+  "time": 1792900752.2907922,
   "checks": [
     {
       "hook": "ruff-check",
@@ -62,10 +62,22 @@
       "output": "Check new tests are wired into Buildkite CI..........(no files to check)Skipped\n- hook id: check-test-tethering\n"
     }
   ],
-  "cpu_regressions": {
-    "command": "CUDA_VISIBLE_DEVICES=-1 .venv/bin/python examples/deployment/pp2_pdco/test_regressions.py",
-    "returncode": 0,
-    "summary": "test_context_loader_copies_k_and_v_to_distinct_fused_slices (__main__.RegressionTests.test_context_loader_copies_k_and_v_to_distinct_fused_slices) ... ok\ntest_context_loader_rejects_incomplete_duplicate_or_bad_weights (__main__.RegressionTests.test_context_loader_rejects_incomplete_duplicate_or_bad_weights) ... ok\ntest_launcher_keeps_pdco_on_producer_and_complete_draft_on_decode (__main__.RegressionTests.test_launcher_keeps_pdco_on_producer_and_complete_draft_on_decode) ... ok\ntest_pdco_rejects_decode_or_combined_kv_roles (__main__.RegressionTests.test_pdco_rejects_decode_or_combined_kv_roles) ... ok\ntest_pp2_and_pp4_keep_identical_swa_layer_groups_on_decode (__main__.RegressionTests.test_pp2_and_pp4_keep_identical_swa_layer_groups_on_decode) ... ok\n\n----------------------------------------------------------------------\nRan 5 tests in 0.038s\n\nOK\n"
-  },
+  "cpu_regressions": [
+    {
+      "script": "test_regressions.py",
+      "returncode": 0,
+      "summary": "test_context_loader_copies_k_and_v_to_distinct_fused_slices (__main__.RegressionTests.test_context_loader_copies_k_and_v_to_distinct_fused_slices) ... ok\ntest_context_loader_rejects_incomplete_duplicate_or_bad_weights (__main__.RegressionTests.test_context_loader_rejects_incomplete_duplicate_or_bad_weights) ... ok\ntest_launcher_keeps_pdco_on_producer_and_complete_draft_on_decode (__main__.RegressionTests.test_launcher_keeps_pdco_on_producer_and_complete_draft_on_decode) ... ok\ntest_pdco_rejects_decode_or_combined_kv_roles (__main__.RegressionTests.test_pdco_rejects_decode_or_combined_kv_roles) ... ok\ntest_pp2_and_pp4_keep_identical_swa_layer_groups_on_decode (__main__.RegressionTests.test_pp2_and_pp4_keep_identical_swa_layer_groups_on_decode) ... ok\n\n----------------------------------------------------------------------\nRan 5 tests in 0.072s\n\nOK\n"
+    },
+    {
+      "script": "test_aux_reduction.py",
+      "returncode": 0,
+      "summary": "....\n----------------------------------------------------------------------\nRan 4 tests in 0.014s\n\nOK\n"
+    },
+    {
+      "script": "test_integration_static.py",
+      "returncode": 0,
+      "summary": "PASS: static integration invariants; this is not a GPU/PD correctness test\n"
+    }
+  ],
   "new_gpu_evaluation": false
 }
