@@ -16,6 +16,11 @@ def parser():
     p.add_argument("--target", required=True)
     p.add_argument("--draft", required=True)
     p.add_argument("--gpus", required=True, help="Two P GPUs or four D GPUs")
+    p.add_argument(
+        "--pp-partition",
+        default="38,40",
+        help="P-side layer counts, e.g. 38,40 or 40,38; ignored on D",
+    )
     p.add_argument("--served-model-name", default="dspark-alaya")
     p.add_argument("--port", type=int)
     p.add_argument("--bootstrap-port", type=int, default=8999)
@@ -35,6 +40,16 @@ def parser():
 
 def build(args):
     producer = args.role == "p"
+    partition = None
+    if producer:
+        try:
+            partition = [int(x) for x in args.pp_partition.split(",")]
+        except ValueError as exc:
+            raise ValueError(
+                "PP2 partition must contain two positive integers"
+            ) from exc
+        if len(partition) != 2 or min(partition) < 1:
+            raise ValueError("PP2 partition must contain two positive integers")
     devices = [int(x) for x in args.gpus.split(",")]
     if len(devices) != (2 if producer else 4) or len(set(devices)) != len(devices):
         raise ValueError("PP2 requires two distinct P GPUs; DP4 requires four D GPUs")
@@ -79,7 +94,7 @@ def build(args):
         "VLLM_DSPARK_PREFILL_CONTEXT_KV_ONLY": "1" if pdco else "0",
     }
     if producer:
-        overrides["VLLM_PP_LAYER_PARTITION"] = "38,40"
+        overrides["VLLM_PP_LAYER_PARTITION"] = ",".join(map(str, partition))
         remove = ["VLLM_SWA_PD_GROUP_SPLIT"]
     else:
         overrides["VLLM_SWA_PD_GROUP_SPLIT"] = "1"
@@ -179,6 +194,11 @@ def main():
     for root in (args.target, args.draft):
         if not Path(root, "config.json").is_file():
             raise FileNotFoundError(f"Missing model config: {root}")
+    if args.role == "p":
+        config = json.loads(Path(args.target, "config.json").read_text())
+        partition = plan["environment"]["VLLM_PP_LAYER_PARTITION"]
+        if sum(map(int, partition.split(","))) != config["num_hidden_layers"]:
+            raise ValueError("PP partition must cover all target hidden layers")
     query = subprocess.check_output(
         [
             "nvidia-smi",

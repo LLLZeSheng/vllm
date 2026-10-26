@@ -1,0 +1,9 @@
+{
+  "time": 1792998250.5968924,
+  "returncode": 0,
+  "stdout": "torch 2.13.0+cu130 device NVIDIA H800\n",
+  "stderr": "test_cuda_graph_replay_restores_new_indices_each_batch (__main__.PPTopKTests.test_cuda_graph_replay_restores_new_indices_each_batch) ... ok\ntest_factory_preserves_index_dtype_and_active_batch_rows (__main__.PPTopKTests.test_factory_preserves_index_dtype_and_active_batch_rows) ... ok\ntest_launcher_rejects_wrong_layer_total_before_accessing_gpus (__main__.PPTopKTests.test_launcher_rejects_wrong_layer_total_before_accessing_gpus) ... ok\ntest_launcher_supports_40_38_without_changing_other_settings (__main__.PPTopKTests.test_launcher_supports_40_38_without_changing_other_settings) ... ok\ntest_partitions_match_unsplit_reference_across_changing_batches (__main__.PPTopKTests.test_partitions_match_unsplit_reference_across_changing_batches) ... ok\ntest_unaligned_boundary_requires_transferred_indices (__main__.PPTopKTests.test_unaligned_boundary_requires_transferred_indices) ... ok\n\n----------------------------------------------------------------------\nRan 6 tests in 2.713s\n\nOK\n",
+  "test_kind": "Production model relay methods with toy layers; one-GPU CUDA Graph, not full model PP",
+  "host": "192.168.47.125",
+  "business_service_changed": false
+}

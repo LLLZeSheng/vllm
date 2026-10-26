@@ -80,6 +80,11 @@ configuration instead. These are distinct entry points to the same design.
 
 ## Launch
 
+For **40/38** instead of the default 38/40, pass `--pp-partition 40,38`
+on P. The target's DSA Top-K indices must cross that PP boundary; the
+integration already carries them. See [PP Top-K handoff](PP_TOPK_HANDOFF.md)
+for implementation provenance, regression tests and validation limits.
+
 Set paths to the actual target/draft checkpoints and an existing RDMA device.
 This example starts one P and one D on six cards; a second P can use cards
 2–3 with a different API port and bootstrap port to form 2P1D.
