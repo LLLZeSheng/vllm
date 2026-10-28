@@ -41,10 +41,10 @@ class DSparkSpeculator(DFlashSpeculator):
     _speculator_name = "DSpark"
 
     def __init__(self, vllm_config: VllmConfig, device: torch.device):
+        self.prefill_context_kv_only = (
+            vllm_config.speculative_config.prefill_context_kv_only
+        )
         super().__init__(vllm_config, device)
-        from vllm.model_executor.models.dspark_context_kv import context_kv_only
-
-        self.prefill_context_kv_only = context_kv_only(vllm_config)
 
         # Whether to sample from the anchor position. When True, uses anchor-as-first
         # (N slots, each position predicts the next token). When False, uses 1+N
