@@ -1,0 +1,10 @@
+{
+  "time": 1793170709.7863655,
+  "elapsed_s": 37.76710653305054,
+  "returncode": 0,
+  "passed": true,
+  "test_methods": 8,
+  "package_source": "all3187 tracked vllm files match the PR worktree",
+  "command": ".venv/bin/python with unittest loader for tests/kernels/attention/test_glm_dspark_mla.py",
+  "native_libraries": "vLLM0.31.0"
+}

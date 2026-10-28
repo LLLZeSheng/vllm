@@ -470,27 +470,50 @@ class DFlashSpeculator(DraftModelSpeculator):
                 self.sample_from_anchor,
             )
 
-        batch_sync, num_batch_tokens = (
-            self._build_uniform_batch_dp_sync(dp_sync, num_reqs, self.num_query_per_req)
-            if dp_sync is not None
-            else (None, num_query_tokens)
-        )
-        # Every DFlash step has exactly num_query_per_req tokens, so we can use FULL CGs
-        batch_desc, batch_sync = dispatch_cg_and_sync_dp(
-            self.query_cudagraph_manager,
-            num_reqs,
-            num_batch_tokens,
-            uniform_token_count=self.num_query_per_req,
-            dp_size=self.dp_size,
-            dp_rank=self.dp_rank,
-            need_eager=is_profile,
-            dp_sync=batch_sync,
-        )
-        num_tokens_padded = batch_desc.num_tokens
-        num_tokens_across_dp = (
-            batch_sync.num_tokens_across_dp if batch_sync is not None else None
-        )
-
+        if getattr(self, "_local_dense_mla", False) and self.eplb_state is None:
+            # The GLM MLA draft uses dense TP1 linears, with no DP/EP
+            # collectives. Its uniform query block need not inherit the
+            # verifier's eager flag or the busiest target rank's padding.
+            batch_desc, _ = dispatch_cg_and_sync_dp(
+                self.query_cudagraph_manager,
+                num_reqs,
+                num_query_tokens,
+                uniform_token_count=self.num_query_per_req,
+                dp_size=1,
+                dp_rank=0,
+                need_eager=is_profile,
+            )
+            num_tokens_padded = batch_desc.num_tokens
+            num_tokens_across_dp = (
+                torch.full(
+                    (self.dp_size,), num_tokens_padded, dtype=torch.int32, device="cpu"
+                )
+                if self.dp_size > 1
+                else None
+            )
+        else:
+            batch_sync, num_batch_tokens = (
+                self._build_uniform_batch_dp_sync(
+                    dp_sync, num_reqs, self.num_query_per_req
+                )
+                if dp_sync is not None
+                else (None, num_query_tokens)
+            )
+            # Every DFlash step has num_query_per_req tokens, allowing FULL CGs.
+            batch_desc, batch_sync = dispatch_cg_and_sync_dp(
+                self.query_cudagraph_manager,
+                num_reqs,
+                num_batch_tokens,
+                uniform_token_count=self.num_query_per_req,
+                dp_size=self.dp_size,
+                dp_rank=self.dp_rank,
+                need_eager=is_profile,
+                dp_sync=batch_sync,
+            )
+            num_tokens_padded = batch_desc.num_tokens
+            num_tokens_across_dp = (
+                batch_sync.num_tokens_across_dp if batch_sync is not None else None
+            )
         if batch_desc.cg_mode == CUDAGraphMode.FULL:
             # The graph stores the first num_context context rows.
             assert batch_desc.num_reqs is not None
