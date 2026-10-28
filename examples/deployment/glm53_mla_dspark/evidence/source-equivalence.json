@@ -1,0 +1,106 @@
+{
+  "passed": true,
+  "files": [
+    {
+      "runtime_file": "vllm/config/speculative.py",
+      "package_file": "vllm/config/speculative.py",
+      "runtime_sha256": "b99725ab0b30aa6ce14a6823c590183d1321b5a205463fd3b8032340c2f45920",
+      "package_sha256": "b99725ab0b30aa6ce14a6823c590183d1321b5a205463fd3b8032340c2f45920",
+      "default_path_ast_equal": true
+    },
+    {
+      "runtime_file": "vllm/transformers_utils/model_arch_config_convertor.py",
+      "package_file": "vllm/transformers_utils/model_arch_config_convertor.py",
+      "runtime_sha256": "2ce10b9dae8d7ed85b1bb534b76de7161bc3464e7040f3844e0e83cf8ed6549e",
+      "package_sha256": "2ce10b9dae8d7ed85b1bb534b76de7161bc3464e7040f3844e0e83cf8ed6549e",
+      "default_path_ast_equal": true
+    },
+    {
+      "runtime_file": "vllm/transformers_utils/configs/speculators/algos.py",
+      "package_file": "vllm/transformers_utils/configs/speculators/algos.py",
+      "runtime_sha256": "95114a9ed5011981a5dbba3bce72d4950812b55c6e87e9b2070fb45e89b3ec71",
+      "package_sha256": "95114a9ed5011981a5dbba3bce72d4950812b55c6e87e9b2070fb45e89b3ec71",
+      "default_path_ast_equal": true
+    },
+    {
+      "runtime_file": "vllm/models/deepseek_v32/nvidia/model.py",
+      "package_file": "vllm/models/deepseek_v32/nvidia/model.py",
+      "runtime_sha256": "eb129b3f21e052b44198f5ca0bcd16da732eb7ea6b176214a13ab2f7295416d8",
+      "package_sha256": "eb129b3f21e052b44198f5ca0bcd16da732eb7ea6b176214a13ab2f7295416d8",
+      "default_path_ast_equal": true
+    },
+    {
+      "runtime_file": "vllm/model_executor/models/qwen3_dspark.py",
+      "package_file": "vllm/model_executor/models/qwen3_dspark.py",
+      "runtime_sha256": "6fe4a2d4401f015c42708b72004f67b6b3b0078aa7207157c787d11d1293af8b",
+      "package_sha256": "6fe4a2d4401f015c42708b72004f67b6b3b0078aa7207157c787d11d1293af8b",
+      "default_path_ast_equal": true
+    },
+    {
+      "runtime_file": "vllm/model_executor/models/registry.py",
+      "package_file": "vllm/model_executor/models/registry.py",
+      "runtime_sha256": "5509de56924e4b9ccf2155d3f597d7646a0308d04e285d9b65a9efdab837e51d",
+      "package_sha256": "5509de56924e4b9ccf2155d3f597d7646a0308d04e285d9b65a9efdab837e51d",
+      "default_path_ast_equal": true
+    },
+    {
+      "runtime_file": "vllm/model_executor/models/glm_dspark_mla.py",
+      "package_file": "vllm/model_executor/models/glm_dspark_mla.py",
+      "runtime_sha256": "928433ad5d4fcdec705908c8aa7151e195255d6fc8e6925673833108edfaeeb2",
+      "package_sha256": "4a6995b793f58b20573d8fd385a76543936c57f7dfb459d06c05e6bc09616270",
+      "default_path_ast_equal": true
+    },
+    {
+      "runtime_file": "vllm/model_executor/models/dspark_context_kv.py",
+      "package_file": "vllm/model_executor/models/dspark_context_kv.py",
+      "runtime_sha256": "572b7b3eb8db4869f7b919ed120ac7494c4285ce7a9f2afe0f188936f370626c",
+      "package_sha256": "572b7b3eb8db4869f7b919ed120ac7494c4285ce7a9f2afe0f188936f370626c",
+      "default_path_ast_equal": true
+    },
+    {
+      "runtime_file": "vllm/v1/worker/gpu/spec_decode/dspark/utils.py",
+      "package_file": "vllm/v1/worker/gpu/spec_decode/dspark/utils.py",
+      "runtime_sha256": "d0bf9750dc2bf898bd305a082dbe95b8f87d1c28dda0abd81528f57c8a57a47b",
+      "package_sha256": "d0bf9750dc2bf898bd305a082dbe95b8f87d1c28dda0abd81528f57c8a57a47b",
+      "default_path_ast_equal": true
+    },
+    {
+      "runtime_file": "vllm/v1/worker/gpu/spec_decode/dspark/speculator.py",
+      "package_file": "vllm/v1/worker/gpu/spec_decode/dspark/speculator.py",
+      "runtime_sha256": "ddd6aa6e5c115bf31468a12eb60d99c9b1a5f67cadaf60b4b879cef1fe2a5fdd",
+      "package_sha256": "9e1ba643813ad9fe2d214136afce008c2ccd6e6e12526699d523ef8bba7799f0",
+      "default_path_ast_equal": true
+    },
+    {
+      "runtime_file": "vllm/v1/worker/gpu/spec_decode/dflash/speculator.py",
+      "package_file": "vllm/v1/worker/gpu/spec_decode/dflash/speculator.py",
+      "runtime_sha256": "52adca07a1c607b4608e388d0bfc92c08479016f714e3aaddac6bf1d556e91af",
+      "package_sha256": "0b97a5c1809c1b45d728744bca1dca83ac45be5dbee69487c8e052c4a82e1d24",
+      "default_path_ast_equal": true
+    },
+    {
+      "runtime_file": "vllm/v1/attention/backends/mla/dspark.py",
+      "package_file": "vllm/v1/attention/backends/mla/dspark.py",
+      "runtime_sha256": "d6c2b91c692aa62285d2a006734e2fd8400866c3a3194fb45886b23e245f7e6b",
+      "package_sha256": "7650320f5daced74e15b36d8a235444c9a7eb55be688e59e21ae52a9f3af1d39",
+      "default_path_ast_equal": true
+    },
+    {
+      "runtime_file": "vllm/v1/attention/backends/mla/dspark_upstream_window.py",
+      "package_file": "vllm/v1/attention/backends/mla/dspark_upstream_window.py",
+      "runtime_sha256": "1a678572ce13a639f3e398058ec6fc10f8bfb2b8e0042e8766f322e39e30a094",
+      "package_sha256": "5622d4b306a6867c6b2284d46602006f9ce084d1b5c97de5028caafa9bf9708d",
+      "default_path_ast_equal": true
+    },
+    {
+      "runtime_file": "vllm/v1/attention/backends/mla/dspark_native_window_ops.py",
+      "package_file": "vllm/v1/attention/ops/triton_decode_attention.py",
+      "runtime_sha256": "fdf7a035d26c9a1b6f77930a5b3a5f4c1f545094a8c00a949fcb7f0dc3f1b7f3",
+      "package_sha256": "fdf7a035d26c9a1b6f77930a5b3a5f4c1f545094a8c00a949fcb7f0dc3f1b7f3",
+      "default_path_ast_equal": true
+    }
+  ],
+  "native_arithmetic_byte_identical": true,
+  "allowed_packaging_differences": "Formatting/import organization/docstrings; relocate identical PR63795 arithmetic to the shared kernel module; remove disabled private parity logging hook. No legacy custom/reference kernel is shipped.",
+  "scope": "This AST check complements, and does not replace, real packaged GPU tests and the MG46/1M end-to-end validation."
+}

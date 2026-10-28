@@ -1,0 +1,226 @@
+{
+  "passed": true,
+  "workers": 4,
+  "checks": [
+    {
+      "check": 1,
+      "requests": 1,
+      "captured_requests": 1,
+      "captured_tokens": 8,
+      "maximum_context": 84553,
+      "tokens_equal": true,
+      "finite_mask_equal": true,
+      "logit_relative_l2": 0.0,
+      "logit_max_abs": 0.0
+    },
+    {
+      "check": 2,
+      "requests": 1,
+      "captured_requests": 1,
+      "captured_tokens": 8,
+      "maximum_context": 84562,
+      "tokens_equal": true,
+      "finite_mask_equal": true,
+      "logit_relative_l2": 0.0,
+      "logit_max_abs": 0.0
+    },
+    {
+      "check": 3,
+      "requests": 1,
+      "captured_requests": 1,
+      "captured_tokens": 8,
+      "maximum_context": 84563,
+      "tokens_equal": true,
+      "finite_mask_equal": true,
+      "logit_relative_l2": 0.0,
+      "logit_max_abs": 0.0
+    },
+    {
+      "check": 4,
+      "requests": 1,
+      "captured_requests": 1,
+      "captured_tokens": 8,
+      "maximum_context": 84565,
+      "tokens_equal": true,
+      "finite_mask_equal": true,
+      "logit_relative_l2": 0.0,
+      "logit_max_abs": 0.0
+    },
+    {
+      "check": 5,
+      "requests": 1,
+      "captured_requests": 1,
+      "captured_tokens": 8,
+      "maximum_context": 84574,
+      "tokens_equal": true,
+      "finite_mask_equal": true,
+      "logit_relative_l2": 0.0,
+      "logit_max_abs": 0.0
+    },
+    {
+      "check": 1,
+      "requests": 1,
+      "captured_requests": 1,
+      "captured_tokens": 8,
+      "maximum_context": 23649,
+      "tokens_equal": true,
+      "finite_mask_equal": true,
+      "logit_relative_l2": 0.0,
+      "logit_max_abs": 0.0
+    },
+    {
+      "check": 2,
+      "requests": 1,
+      "captured_requests": 1,
+      "captured_tokens": 8,
+      "maximum_context": 23658,
+      "tokens_equal": true,
+      "finite_mask_equal": true,
+      "logit_relative_l2": 0.0,
+      "logit_max_abs": 0.0
+    },
+    {
+      "check": 3,
+      "requests": 1,
+      "captured_requests": 1,
+      "captured_tokens": 8,
+      "maximum_context": 23659,
+      "tokens_equal": true,
+      "finite_mask_equal": true,
+      "logit_relative_l2": 0.0,
+      "logit_max_abs": 0.0
+    },
+    {
+      "check": 4,
+      "requests": 1,
+      "captured_requests": 1,
+      "captured_tokens": 8,
+      "maximum_context": 23662,
+      "tokens_equal": true,
+      "finite_mask_equal": true,
+      "logit_relative_l2": 0.0,
+      "logit_max_abs": 0.0
+    },
+    {
+      "check": 5,
+      "requests": 1,
+      "captured_requests": 1,
+      "captured_tokens": 8,
+      "maximum_context": 23665,
+      "tokens_equal": true,
+      "finite_mask_equal": true,
+      "logit_relative_l2": 0.0,
+      "logit_max_abs": 0.0
+    },
+    {
+      "check": 1,
+      "requests": 1,
+      "captured_requests": 1,
+      "captured_tokens": 8,
+      "maximum_context": 58580,
+      "tokens_equal": true,
+      "finite_mask_equal": true,
+      "logit_relative_l2": 0.0,
+      "logit_max_abs": 0.0
+    },
+    {
+      "check": 2,
+      "requests": 1,
+      "captured_requests": 1,
+      "captured_tokens": 8,
+      "maximum_context": 58589,
+      "tokens_equal": true,
+      "finite_mask_equal": true,
+      "logit_relative_l2": 0.0,
+      "logit_max_abs": 0.0
+    },
+    {
+      "check": 3,
+      "requests": 1,
+      "captured_requests": 1,
+      "captured_tokens": 8,
+      "maximum_context": 58590,
+      "tokens_equal": true,
+      "finite_mask_equal": true,
+      "logit_relative_l2": 0.0,
+      "logit_max_abs": 0.0
+    },
+    {
+      "check": 4,
+      "requests": 1,
+      "captured_requests": 1,
+      "captured_tokens": 8,
+      "maximum_context": 58593,
+      "tokens_equal": true,
+      "finite_mask_equal": true,
+      "logit_relative_l2": 0.0,
+      "logit_max_abs": 0.0
+    },
+    {
+      "check": 5,
+      "requests": 1,
+      "captured_requests": 1,
+      "captured_tokens": 8,
+      "maximum_context": 58594,
+      "tokens_equal": true,
+      "finite_mask_equal": true,
+      "logit_relative_l2": 0.0,
+      "logit_max_abs": 0.0
+    },
+    {
+      "check": 1,
+      "requests": 2,
+      "captured_requests": 2,
+      "captured_tokens": 16,
+      "maximum_context": 45273,
+      "tokens_equal": true,
+      "finite_mask_equal": true,
+      "logit_relative_l2": 0.0,
+      "logit_max_abs": 0.0
+    },
+    {
+      "check": 2,
+      "requests": 2,
+      "captured_requests": 2,
+      "captured_tokens": 16,
+      "maximum_context": 45282,
+      "tokens_equal": true,
+      "finite_mask_equal": true,
+      "logit_relative_l2": 0.0,
+      "logit_max_abs": 0.0
+    },
+    {
+      "check": 3,
+      "requests": 4,
+      "captured_requests": 4,
+      "captured_tokens": 32,
+      "maximum_context": 63226,
+      "tokens_equal": true,
+      "finite_mask_equal": true,
+      "logit_relative_l2": 0.0,
+      "logit_max_abs": 0.0
+    },
+    {
+      "check": 4,
+      "requests": 4,
+      "captured_requests": 4,
+      "captured_tokens": 32,
+      "maximum_context": 63235,
+      "tokens_equal": true,
+      "finite_mask_equal": true,
+      "logit_relative_l2": 0.0,
+      "logit_max_abs": 0.0
+    },
+    {
+      "check": 5,
+      "requests": 4,
+      "captured_requests": 4,
+      "captured_tokens": 32,
+      "maximum_context": 63236,
+      "tokens_equal": true,
+      "finite_mask_equal": true,
+      "logit_relative_l2": 0.0,
+      "logit_max_abs": 0.0
+    }
+  ]
+}

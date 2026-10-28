@@ -1,7 +1,8 @@
 # PP2 DSpark Prefill Context-KV Only (PDCO)
 
 This deployment branch packages the previously executed vLLM 0.31.0 PP/PD
-integration. The GQA branch contains runnable source changes, a configurable
+integration. **This is the combined GQA + MLA extension branch**,
+`deploy/pp2-dspark-pdco-mla-v031`. Its parent GQA branch contains source changes, a configurable
 launcher, CPU regressions, and historical aggregate measurements.
 
 | Item | Configuration |
@@ -46,7 +47,7 @@ P performs no draft-token generation. D still generates and verifies drafts.
 All draft layers retain their original globally named cache entries; PDCO
 does not remove SWA layers or change their attention visibility.
 
-The six source files listed in `evidence/source-manifest.json` preserve the
+The source files listed in `evidence/source-manifest.json` preserve the
 executed GQA integration with license/import/format normalization. Besides selective loading, they
 include the query-buffer/slot-mapping capacity fix and the generalized SWA
 group matching needed by both 4SWA+1FA and 5SWA layouts. The PP relay and
@@ -60,7 +61,7 @@ of a running service. The launcher puts this checkout first on `PYTHONPATH`;
 there is no model-directory `runtime/` or `sitecustomize.py` requirement.
 
 ```bash
-git clone --branch deploy/pp2-dspark-pdco-v031 \
+git clone --branch deploy/pp2-dspark-pdco-mla-v031 \
   https://github.com/LLLZeSheng/vllm.git vllm-pp2-pdco
 cd vllm-pp2-pdco
 uv venv --python 3.12
@@ -72,11 +73,11 @@ VLLM_PRECOMPILED_WHEEL_LOCATION=/path/to/matching-vllm-0.31.0.whl \
   uv pip install --python .venv/bin/python -e . --no-deps --no-build-isolation
 ```
 
-The source manifest pins the integration base. This branch intentionally
-keeps its existing fork configuration schema; its GQA PDCO switch is the
-P-only `VLLM_DSPARK_PREFILL_CONTEXT_KV_ONLY=1` environment variable.
-The upstream feature branch uses `prefill_context_kv_only` in speculative
-configuration instead. These are distinct entry points to the same design.
+The source manifest pins the integration base. The parent GQA-only integration
+uses the P-only `VLLM_DSPARK_PREFILL_CONTEXT_KV_ONLY=1` environment variable.
+**This combined branch uses `prefill_context_kv_only` in speculative config
+for both architectures**, and the launcher sets it automatically on P only.
+Its legacy environment variable is harmless; the config field controls PDCO.
 
 ## Launch
 
@@ -156,14 +157,15 @@ the profile, per-block bytes, unused budgets, D figures, and capacity formulas.
 The larger pool follows from freed weight budget; PDCO itself does not reduce
 the number of bytes required for an individual context token.
 
-The optional MLA branch preserves the already executed GLM MLA model/backend,
-physical cache-stride/64-bit-offset fix, producer-only model, and TP auxiliary
-hidden-state reduction fix. Its custom draft latent cache is BF16, not FP8,
-and its prior implementation allocates full-length cache even where the
-attention mask is sliding. Its launcher profile therefore uses eager execution
-and standard verification. Switch **both** P and D to that branch and pass
-`--draft-kind mla`; use a `GlmDSparkMLAForCausalLM` checkpoint. The auxiliary
-capture fix matters to TP reference measurements, even though PP2 uses TP1.
+The historical MLA extension preserved physical cache-stride/64-bit-offset
+handling, a producer-only model, and TP auxiliary-state reduction. The older
+launcher in this directory retains its eager/standard profile and 38/40
+partition for reproducing those measurements. The current implementation uses
+BF16 latent KV with real per-layer sliding-window allocation and supports
+target/draft graphs. Use the new [GLM MLA deployment guide](../glm53_mla_dspark/README.md)
+for the fixed 40/38, K8, block-verification profile and its separate comparison
+report. The older full-length-cache/eager results above must not be relabeled
+as measurements of the new graph/window implementation.
 
 ## Checks
 
@@ -172,6 +174,12 @@ CUDA_VISIBLE_DEVICES=-1 .venv/bin/python \
   examples/deployment/pp2_pdco/test_regressions.py
 .venv/bin/python -m compileall -q examples/deployment/pp2_pdco
 git diff --check
+```
+
+On this combined branch, also run the auxiliary-state reduction regressions:
+
+```bash
+.venv/bin/python examples/deployment/pp2_pdco/test_aux_reduction.py
 ```
 
 The CPU suite executes the selected-weight loader and cache-group function
