@@ -1,13 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-"""Producer-only GQA DSpark with no query, MLP, embedding, or output weights."""
-
-import os
+"""Dedicated DSpark KV producer with no query, MLP, or vocabulary weights."""
 
 import regex as re
 import torch
 from torch import nn
 
+from vllm import _custom_ops as ops
 from vllm.config import get_current_vllm_config
 from vllm.distributed import get_tensor_model_parallel_world_size
 from vllm.logger import init_logger
@@ -27,18 +26,32 @@ logger = init_logger(__name__)
 
 
 def context_kv_only(vllm_config):
-    enabled = os.environ.get("VLLM_DSPARK_PREFILL_CONTEXT_KV_ONLY", "0") == "1"
+    spec = vllm_config.speculative_config
+    enabled = spec is not None and spec.prefill_context_kv_only
     if enabled:
-        spec = vllm_config.speculative_config
         transfer = vllm_config.kv_transfer_config
         if spec is None or spec.method != "dspark":
             raise ValueError("Context-KV-only requires DSpark")
         if transfer is None or transfer.kv_role != "kv_producer":
             raise ValueError("Context-KV-only is restricted to kv_producer")
-        if spec.draft_model_config.architectures != ["Qwen3DSparkModel"]:
-            raise ValueError("Context-KV-only currently supports Qwen3 GQA DSpark")
+        if spec.draft_model_config.architectures not in (
+            ["Qwen3DSparkModel"],
+            ["GlmDSparkMLAForCausalLM"],
+        ):
+            raise ValueError("Context-KV-only supports Qwen3 GQA and GLM MLA DSpark")
         if spec.draft_parallel_config.tensor_parallel_size != 1:
-            raise ValueError("Initial Context-KV-only supports draft TP1")
+            raise ValueError("Context-KV-only requires draft TP1")
+        parallel = spec.target_parallel_config
+        if (
+            parallel.tensor_parallel_size != 1
+            or parallel.prefill_context_parallel_size != 1
+            or parallel.decode_context_parallel_size != 1
+        ):
+            raise ValueError("Context-KV-only requires target TP1, PCP1 and DCP1")
+        if not vllm_config.use_v2_model_runner:
+            raise ValueError("Context-KV-only requires Model Runner V2")
+        if spec.draft_model_config.dtype != torch.bfloat16:
+            raise ValueError("Context-KV-only currently requires BF16 draft weights")
     return enabled
 
 
@@ -83,7 +96,7 @@ class DSparkContextKVModel(DFlashQwen3Model):
         self.confidence_head = None
         self.quant_config = None
         if getattr(config, "attention_bias", False):
-            raise ValueError("Initial Context-KV-only requires bias-free BF16 GQA")
+            raise ValueError("Context-KV-only requires bias-free draft weights")
         if getattr(config, "quantization_config", None):
             raise ValueError("Quantized draft weights are not supported")
         set_default_rope_theta(config, default_theta=1000000)
@@ -98,13 +111,19 @@ class DSparkContextKVModel(DFlashQwen3Model):
         )
         self.hidden_norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.layers = nn.ModuleList()
+        self.is_mla = spec.draft_model_config.architectures == [
+            "GlmDSparkMLAForCausalLM"
+        ]
         cache = get_current_vllm_config().cache_config
         for i in range(config.num_hidden_layers):
             layer = nn.Module()
-            layer.self_attn = ContextKVAttention(
+            attention_cls = MLAContextKVAttention if self.is_mla else ContextKVAttention
+            layer.self_attn = attention_cls(
                 config, i, cache, f"{prefix}.layers.{start_layer_id + i}.self_attn"
             )
             self.layers.append(layer)
+        if self.is_mla:
+            return
         kv_size = config.num_key_value_heads * config.head_dim
         self._fused_kv_weight = nn.Parameter(
             torch.empty(
@@ -116,6 +135,8 @@ class DSparkContextKVModel(DFlashQwen3Model):
         )
 
     def _build_fused_kv_buffers(self):
+        if self.is_mla:
+            return
         attns = [layer.self_attn for layer in self.layers]
         first = attns[0]
         self._hidden_norm_weight = self.hidden_norm.weight.data
@@ -133,16 +154,17 @@ class DSparkContextKVModel(DFlashQwen3Model):
 
     def load_context_weights(self, weights):
         params = dict(self.named_parameters())
-        kv = self.config.num_key_value_heads * self.config.head_dim
+        kv = (
+            0 if self.is_mla else self.config.num_key_value_heads * self.config.head_dim
+        )
         required = {"fc.weight", "hidden_norm.weight"}
         for i in range(self.config.num_hidden_layers):
-            required.update(
-                {
-                    f"layers.{i}.self_attn.k_proj.weight",
-                    f"layers.{i}.self_attn.v_proj.weight",
-                    f"layers.{i}.self_attn.k_norm.weight",
-                }
+            suffixes = (
+                ("kv_a_proj_with_mqa.weight", "kv_a_layernorm.weight")
+                if self.is_mla
+                else ("k_proj.weight", "v_proj.weight", "k_norm.weight")
             )
+            required.update(f"layers.{i}.self_attn.{suffix}" for suffix in suffixes)
         seen = set()
         for name, tensor in weights:
             name = name.removeprefix("model.")
@@ -159,8 +181,8 @@ class DSparkContextKVModel(DFlashQwen3Model):
                 destination = params[name]
             if destination.shape != tensor.shape:
                 raise ValueError(f"Context weight shape mismatch: {name}")
-            if tensor.dtype != torch.bfloat16:
-                raise ValueError(f"Expected BF16 context weight: {name}")
+            if tensor.dtype != destination.dtype:
+                raise ValueError(f"Context weight dtype mismatch: {name}")
             destination.data.copy_(tensor)
             seen.add(name)
         if seen != required:
@@ -173,3 +195,69 @@ class DSparkContextKVModel(DFlashQwen3Model):
             sorted(seen),
         )
         return {"model." + name for name in params}
+
+    def precompute_and_store_context_kv(
+        self, context_states, context_positions, context_slot_mapping=None
+    ):
+        if not self.is_mla:
+            return super().precompute_and_store_context_kv(
+                context_states, context_positions, context_slot_mapping
+            )
+        from .glm_dspark_mla import rms
+
+        context_states = rms(
+            context_states, self.hidden_norm.weight, self.config.rms_norm_eps
+        )
+        for i, layer in enumerate(self.layers):
+            slots = (
+                context_slot_mapping[i]
+                if isinstance(context_slot_mapping, (list, tuple))
+                else context_slot_mapping
+            )
+            layer.self_attn.store(context_states, context_positions, slots)
+
+
+class MLAContextKVAttention(nn.Module):
+    """Only latent projection, normalization, rotary keys and cache registration."""
+
+    def __init__(self, config, layer_idx, cache_config, prefix):
+        super().__init__()
+        from .glm_dspark_mla import DSparkMLACache, GlmDSparkMLAAttention, MLARMSNorm
+
+        dimensions = (config.kv_lora_rank, config.qk_rope_head_dim)
+        if dimensions != (512, 64):
+            raise ValueError(f"Unsupported DSpark MLA cache dimensions: {dimensions}")
+        if cache_config.cache_dtype not in ("auto", "bfloat16"):
+            raise ValueError("GLM MLA context KV requires BF16 draft cache")
+        self.num_heads = config.num_attention_heads
+        self.sliding_window, self.causal = _resolve_layer_attention(config, layer_idx)
+        self.rope_theta = config.rope_parameters["rope_theta"]
+        self.is_neox_style = getattr(config, "is_neox_style", True)
+        self.rope = GlmDSparkMLAAttention.rope.__get__(self)
+        self.kv_a_proj_with_mqa = nn.Linear(config.hidden_size, 576, bias=False)
+        self.kv_a_layernorm = MLARMSNorm(512, config.rms_norm_eps)
+        self.attn = DSparkMLACache(
+            self.num_heads,
+            128,
+            256**-0.5,
+            num_kv_heads=1,
+            cache_config=cache_config,
+            per_layer_sliding_window=self.sliding_window,
+            prefix=prefix + ".attn",
+        )
+
+    def store(self, hidden_states, positions, slots):
+        z = self.kv_a_proj_with_mqa(hidden_states)
+        latent = self.kv_a_layernorm(z[:, :512])
+        rotary = self.rope(z[:, 512:].unsqueeze(1), positions).squeeze(1)
+        if slots is not None:
+            # The existing MLA insertion kernel handles strided BLHNC views,
+            # 64-bit block offsets and padded (-1) slots without host sync.
+            ops.concat_and_cache_mla(
+                latent,
+                rotary,
+                self.attn.kv_cache,
+                slots,
+                "auto",
+                self.attn._k_scale,
+            )

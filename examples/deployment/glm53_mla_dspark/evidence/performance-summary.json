@@ -1,0 +1,281 @@
+{
+  "date": "2026-10-28",
+  "selected": {
+    "model": "MLA optimized",
+    "num_spec_tokens": 8,
+    "verification": "block",
+    "count": 300,
+    "errors": 0,
+    "clean_counters": true,
+    "acceptance_including_bonus": 3.8967228025688376,
+    "token_weighted_tpot_ms": 7.498819652724605,
+    "elapsed_s": 300.0826593149977,
+    "source": "eval/0831-300-mla-block.json"
+  },
+  "matched_gqa": {
+    "model": "GQA 5SWA8192 control",
+    "num_spec_tokens": 8,
+    "verification": "block",
+    "count": 300,
+    "errors": 0,
+    "clean_counters": true,
+    "acceptance_including_bonus": 4.16620778267254,
+    "token_weighted_tpot_ms": 6.421127706500235,
+    "elapsed_s": 272.1158972319972,
+    "source": "eval/0831-300-gqa-block.json"
+  },
+  "tpot_ratio_to_gqa": 1.1678353079838923,
+  "speedup_over_mla_eager": 8.846960977920567,
+  "measured": [
+    {
+      "model": "MLA eager",
+      "num_spec_tokens": 8,
+      "verification": "standard",
+      "count": 300,
+      "errors": 0,
+      "clean_counters": true,
+      "acceptance_including_bonus": 3.858480999146029,
+      "token_weighted_tpot_ms": 66.34176484811844,
+      "elapsed_s": 1408.5601424020133,
+      "source": "eval/0831-300-grouped.json"
+    },
+    {
+      "model": "MLA graphs, original grid",
+      "num_spec_tokens": 8,
+      "verification": "standard",
+      "count": 300,
+      "errors": 0,
+      "clean_counters": true,
+      "acceptance_including_bonus": 3.8330572580199878,
+      "token_weighted_tpot_ms": 7.74118646701861,
+      "elapsed_s": 290.7064020220132,
+      "source": "eval/0831-300-fullgraph.json"
+    },
+    {
+      "model": "MLA optimized",
+      "num_spec_tokens": 8,
+      "verification": "standard",
+      "count": 300,
+      "errors": 0,
+      "clean_counters": true,
+      "acceptance_including_bonus": 3.909085833914864,
+      "token_weighted_tpot_ms": 7.597304867802102,
+      "elapsed_s": 290.7004163280071,
+      "source": "eval/0831-300-improved-graph.json"
+    },
+    {
+      "model": "MLA optimized",
+      "num_spec_tokens": 8,
+      "verification": "block",
+      "count": 300,
+      "errors": 0,
+      "clean_counters": true,
+      "acceptance_including_bonus": 3.8967228025688376,
+      "token_weighted_tpot_ms": 7.498819652724605,
+      "elapsed_s": 300.0826593149977,
+      "source": "eval/0831-300-mla-block.json"
+    },
+    {
+      "model": "GQA 5SWA8192 control",
+      "num_spec_tokens": 8,
+      "verification": "standard",
+      "count": 300,
+      "errors": 0,
+      "clean_counters": true,
+      "acceptance_including_bonus": 4.131598601858214,
+      "token_weighted_tpot_ms": 6.511187024023369,
+      "elapsed_s": 274.58328114199685,
+      "source": "eval/0831-300-gqa-matched.json"
+    },
+    {
+      "model": "GQA 5SWA8192 control",
+      "num_spec_tokens": 8,
+      "verification": "block",
+      "count": 300,
+      "errors": 0,
+      "clean_counters": true,
+      "acceptance_including_bonus": 4.16620778267254,
+      "token_weighted_tpot_ms": 6.421127706500235,
+      "elapsed_s": 272.1158972319972,
+      "source": "eval/0831-300-gqa-block.json"
+    },
+    {
+      "model": "MLA optimized",
+      "num_spec_tokens": 7,
+      "verification": "block",
+      "count": 300,
+      "errors": 0,
+      "clean_counters": true,
+      "acceptance_including_bonus": 3.81543939059395,
+      "token_weighted_tpot_ms": 7.484799058797164,
+      "elapsed_s": 298.65534728299826,
+      "source": "eval/0831-300-k7-graph.json"
+    },
+    {
+      "model": "MLA optimized",
+      "num_spec_tokens": 5,
+      "verification": "block",
+      "count": 300,
+      "errors": 0,
+      "clean_counters": true,
+      "acceptance_including_bonus": 3.5230799791423535,
+      "token_weighted_tpot_ms": 7.651497577925875,
+      "elapsed_s": 299.499137042003,
+      "source": "eval/0831-300-k5-graph.json"
+    }
+  ],
+  "per_position": {
+    "gqa_block": [
+      {
+        "position": 1,
+        "accepted_tokens": 26237.0,
+        "accepted_per_round": 0.8026492902594224
+      },
+      {
+        "position": 2,
+        "accepted_tokens": 20491.0,
+        "accepted_per_round": 0.6268661282427802
+      },
+      {
+        "position": 3,
+        "accepted_tokens": 15816.0,
+        "accepted_per_round": 0.48384728340675476
+      },
+      {
+        "position": 4,
+        "accepted_tokens": 12320.0,
+        "accepted_per_round": 0.3768967205090553
+      },
+      {
+        "position": 5,
+        "accepted_tokens": 9687.0,
+        "accepted_per_round": 0.29634728340675476
+      },
+      {
+        "position": 6,
+        "accepted_tokens": 7660.0,
+        "accepted_per_round": 0.23433675966715614
+      },
+      {
+        "position": 7,
+        "accepted_tokens": 6208.0,
+        "accepted_per_round": 0.18991678903573175
+      },
+      {
+        "position": 8,
+        "accepted_tokens": 5078.0,
+        "accepted_per_round": 0.15534752814488498
+      }
+    ],
+    "mla_block": [
+      {
+        "position": 1,
+        "accepted_tokens": 27887.0,
+        "accepted_per_round": 0.7686392326562113
+      },
+      {
+        "position": 2,
+        "accepted_tokens": 21082.0,
+        "accepted_per_round": 0.5810754940602519
+      },
+      {
+        "position": 3,
+        "accepted_tokens": 16004.0,
+        "accepted_per_round": 0.4411124279926132
+      },
+      {
+        "position": 4,
+        "accepted_tokens": 12308.0,
+        "accepted_per_round": 0.3392409250020672
+      },
+      {
+        "position": 5,
+        "accepted_tokens": 9587.0,
+        "accepted_per_round": 0.264242992199774
+      },
+      {
+        "position": 6,
+        "accepted_tokens": 7528.0,
+        "accepted_per_round": 0.20749152448940217
+      },
+      {
+        "position": 7,
+        "accepted_tokens": 5995.0,
+        "accepted_per_round": 0.1652380033626416
+      },
+      {
+        "position": 8,
+        "accepted_tokens": 4705.0,
+        "accepted_per_round": 0.12968220280587636
+      }
+    ],
+    "mla_standard": [
+      {
+        "position": 1,
+        "accepted_tokens": 27733.0,
+        "accepted_per_round": 0.7741242149337055
+      },
+      {
+        "position": 2,
+        "accepted_tokens": 20901.0,
+        "accepted_per_round": 0.5834193998604327
+      },
+      {
+        "position": 3,
+        "accepted_tokens": 15878.0,
+        "accepted_per_round": 0.44321004884856946
+      },
+      {
+        "position": 4,
+        "accepted_tokens": 12100.0,
+        "accepted_per_round": 0.3377529658060014
+      },
+      {
+        "position": 5,
+        "accepted_tokens": 9444.0,
+        "accepted_per_round": 0.2636147941381717
+      },
+      {
+        "position": 6,
+        "accepted_tokens": 7470.0,
+        "accepted_per_round": 0.2085136078157711
+      },
+      {
+        "position": 7,
+        "accepted_tokens": 5967.0,
+        "accepted_per_round": 0.16655966503838102
+      },
+      {
+        "position": 8,
+        "accepted_tokens": 4725.0,
+        "accepted_per_round": 0.13189113747383113
+      }
+    ]
+  },
+  "checkpoint_sha256": "a4448468a48d2b534ecbee3f9dbdfde96ba8491ddcb9665c2d9dd4eac827957d",
+  "pr63795_commit": "3de196f40700bf732ab260bf74883ad13c21f02a",
+  "private_data_included": false,
+  "additional_mg46_1m_pr_validation": {
+    "time": 1793171672.3135455,
+    "target": "MG46",
+    "max_model_len": 1048576,
+    "partition": "40,38",
+    "num_spec_tokens": 8,
+    "verification": "block",
+    "count": 300,
+    "errors": 0,
+    "clean_counters": true,
+    "acceptance": 3.8387813480712083,
+    "tpot_ms": 7.476999920016804,
+    "elapsed_s": 287.68966325197835,
+    "ttft": {
+      "count": 293,
+      "mean": 4.063143206008256,
+      "p50": 3.862019488005899,
+      "p95": 8.749006085388826
+    },
+    "source": "eval/0831-300-mg46-1m-pr.json",
+    "all_tracked_pr_files_used": true,
+    "note": "Additional evaluation; target and max context differ from the MG43 contemporary GQA control."
+  }
+}

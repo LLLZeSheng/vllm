@@ -231,6 +231,8 @@ class Qwen3DSparkModel(DFlashQwen3Model):
 
 
 class Qwen3DSparkForCausalLM(DFlashQwen3ForCausalLM):
+    model_cls = Qwen3DSparkModel
+
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = "") -> None:
         nn.Module.__init__(self)
         speculative_config = vllm_config.speculative_config
@@ -245,15 +247,13 @@ class Qwen3DSparkForCausalLM(DFlashQwen3ForCausalLM):
         self.prefill_context_kv_only = context_kv_only(vllm_config)
         if self.prefill_context_kv_only:
             self.model = DSparkContextKVModel(
-                vllm_config,
-                target_layer_num,
-                maybe_prefix(prefix, "model"),
+                vllm_config, target_layer_num, maybe_prefix(prefix, "model")
             )
             self.draft_id_to_target_id = None
             self.has_own_embed_tokens = True
             self.has_own_lm_head = True
             return
-        self.model = Qwen3DSparkModel(
+        self.model = self.model_cls(
             vllm_config=vllm_config,
             prefix=maybe_prefix(prefix, "model"),
             start_layer_id=target_layer_num,

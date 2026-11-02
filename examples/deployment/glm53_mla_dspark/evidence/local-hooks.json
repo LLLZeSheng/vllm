@@ -1,0 +1,36 @@
+{
+  "time": 1793171213.8947978,
+  "checks": [
+    {
+      "check": "tools/pre_commit/check_spdx_header.py",
+      "returncode": 0,
+      "output": ""
+    },
+    {
+      "check": "tools/pre_commit/check_forbidden_imports.py",
+      "returncode": 0,
+      "output": ""
+    },
+    {
+      "check": "tools/pre_commit/check_torch_cuda.py",
+      "returncode": 0,
+      "output": ""
+    },
+    {
+      "check": "tools/pre_commit/check_boolean_context_manager.py",
+      "returncode": 0,
+      "output": ""
+    },
+    {
+      "check": "tools/pre_commit/validate_config.py",
+      "returncode": 0,
+      "output": "Validating vllm/config/speculative.py config dataclasses \u2705\n"
+    },
+    {
+      "check": "tools/pre_commit/check_init_lazy_imports.py",
+      "returncode": 0,
+      "output": ""
+    }
+  ],
+  "scope": "Direct execution of selected repository hooks, not the full pre-commit pipeline"
+}

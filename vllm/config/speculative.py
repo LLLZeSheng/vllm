@@ -388,6 +388,9 @@ _DRAFT_VLLM_CONFIG_OVERRIDES = (
 class SpeculativeConfig:
     """Configuration for speculative decoding."""
 
+    prefill_context_kv_only: bool = False
+    """Load only DSpark context-KV weights on a dedicated KV producer."""
+
     enforce_eager: bool | None = None
     """Override the default enforce_eager from model_config"""
     # General speculative decoding control
@@ -631,6 +634,8 @@ class SpeculativeConfig:
             "dspark",
         )
         factors.append(uses_aux_hidden_states)
+        if self.prefill_context_kv_only:
+            factors.append("prefill_context_kv_only")
         if self.method == "dspark":
             factors.append(self.enable_adaptive_verification)
 
@@ -1429,6 +1434,8 @@ class SpeculativeConfig:
                     not in self.draft_model_config.architectures
                     and "Gemma4DSparkModel" not in self.draft_model_config.architectures
                     and "K3DSparkModel" not in self.draft_model_config.architectures
+                    and "GlmDSparkMLAForCausalLM"
+                    not in self.draft_model_config.architectures
                 ):
                     # DeepSeek-V4(.1) DSpark reuses the full target config
                     # and its weights ship in the target checkpoint.
@@ -1804,6 +1811,8 @@ class SpeculativeConfig:
 
     @model_validator(mode="after")
     def _verify_args(self) -> Self:
+        if self.prefill_context_kv_only and self.method != "dspark":
+            raise ValueError("prefill_context_kv_only requires method='dspark'")
         if self.tensor_parallel_size is not None:
             raise ValueError(
                 "'tensor_parallel_size' is not a valid argument in the "

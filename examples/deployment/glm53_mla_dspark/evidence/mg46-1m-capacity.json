@@ -1,0 +1,149 @@
+{
+  "time": 1793171300.2770584,
+  "rows": [
+    {
+      "role": "p0",
+      "pp_rank": 0,
+      "blocks": 22767,
+      "required_blocks_1m": 17281,
+      "block_bytes": 1575936.0,
+      "kv_pool_gib": 33.41523456573486,
+      "available_kv_gib": 35.80030639655888,
+      "conservative_single_1m_gib": 25.36340618133545,
+      "fractional_1m_capacity": 1.3174584804120133
+    },
+    {
+      "role": "p0",
+      "pp_rank": 1,
+      "blocks": 22767,
+      "required_blocks_1m": 17281,
+      "block_bytes": 1476864.0,
+      "kv_pool_gib": 31.314569234848022,
+      "available_kv_gib": 31.315685348585248,
+      "conservative_single_1m_gib": 23.768923044204712,
+      "fractional_1m_capacity": 1.3174584804120133
+    },
+    {
+      "role": "p1",
+      "pp_rank": 0,
+      "blocks": 22767,
+      "required_blocks_1m": 17281,
+      "block_bytes": 1575936.0,
+      "kv_pool_gib": 33.41523456573486,
+      "available_kv_gib": 35.80030639655888,
+      "conservative_single_1m_gib": 25.36340618133545,
+      "fractional_1m_capacity": 1.3174584804120133
+    },
+    {
+      "role": "p1",
+      "pp_rank": 1,
+      "blocks": 22767,
+      "required_blocks_1m": 17281,
+      "block_bytes": 1476864.0,
+      "kv_pool_gib": 31.314569234848022,
+      "available_kv_gib": 31.315685348585248,
+      "conservative_single_1m_gib": 23.768923044204712,
+      "fractional_1m_capacity": 1.3174584804120133
+    },
+    {
+      "role": "p2",
+      "pp_rank": 0,
+      "blocks": 22767,
+      "required_blocks_1m": 17281,
+      "block_bytes": 1575936.0,
+      "kv_pool_gib": 33.41523456573486,
+      "available_kv_gib": 35.80030639655888,
+      "conservative_single_1m_gib": 25.36340618133545,
+      "fractional_1m_capacity": 1.3174584804120133
+    },
+    {
+      "role": "p2",
+      "pp_rank": 1,
+      "blocks": 22767,
+      "required_blocks_1m": 17281,
+      "block_bytes": 1476864.0,
+      "kv_pool_gib": 31.314569234848022,
+      "available_kv_gib": 31.315685348585248,
+      "conservative_single_1m_gib": 23.768923044204712,
+      "fractional_1m_capacity": 1.3174584804120133
+    },
+    {
+      "role": "p3",
+      "pp_rank": 0,
+      "blocks": 22767,
+      "required_blocks_1m": 17281,
+      "block_bytes": 1575936.0,
+      "kv_pool_gib": 33.41523456573486,
+      "available_kv_gib": 35.80030639655888,
+      "conservative_single_1m_gib": 25.36340618133545,
+      "fractional_1m_capacity": 1.3174584804120133
+    },
+    {
+      "role": "p3",
+      "pp_rank": 1,
+      "blocks": 22767,
+      "required_blocks_1m": 17281,
+      "block_bytes": 1476864.0,
+      "kv_pool_gib": 31.314569234848022,
+      "available_kv_gib": 31.315685348585248,
+      "conservative_single_1m_gib": 23.768923044204712,
+      "fractional_1m_capacity": 1.3174584804120133
+    },
+    {
+      "role": "p4",
+      "pp_rank": 0,
+      "blocks": 22767,
+      "required_blocks_1m": 17281,
+      "block_bytes": 1575936.0,
+      "kv_pool_gib": 33.41523456573486,
+      "available_kv_gib": 35.80030639655888,
+      "conservative_single_1m_gib": 25.36340618133545,
+      "fractional_1m_capacity": 1.3174584804120133
+    },
+    {
+      "role": "p4",
+      "pp_rank": 1,
+      "blocks": 22767,
+      "required_blocks_1m": 17281,
+      "block_bytes": 1476864.0,
+      "kv_pool_gib": 31.314569234848022,
+      "available_kv_gib": 31.315685348585248,
+      "conservative_single_1m_gib": 23.768923044204712,
+      "fractional_1m_capacity": 1.3174584804120133
+    },
+    {
+      "role": "p5",
+      "pp_rank": 0,
+      "blocks": 22767,
+      "required_blocks_1m": 17281,
+      "block_bytes": 1575936.0,
+      "kv_pool_gib": 33.41523456573486,
+      "available_kv_gib": 35.80030639655888,
+      "conservative_single_1m_gib": 25.36340618133545,
+      "fractional_1m_capacity": 1.3174584804120133
+    },
+    {
+      "role": "p5",
+      "pp_rank": 1,
+      "blocks": 22767,
+      "required_blocks_1m": 17281,
+      "block_bytes": 1476864.0,
+      "kv_pool_gib": 31.314569234848022,
+      "available_kv_gib": 31.315685348585248,
+      "conservative_single_1m_gib": 23.768923044204712,
+      "fractional_1m_capacity": 1.3174584804120133
+    },
+    {
+      "role": "d",
+      "pp_rank": 0,
+      "blocks": 36932,
+      "required_blocks_1m": 16521,
+      "block_bytes": 3052800.0,
+      "kv_pool_gib": 105.00290393829346,
+      "available_kv_gib": 105.00472648628056,
+      "conservative_single_1m_gib": 46.9715416431427,
+      "fractional_1m_capacity": 2.2354579020640397
+    }
+  ],
+  "note": "Cache-manager worst-case pages, including SWA in-flight reservation. D HTTP audit returns DP0 only. Admission/fragmentation can reduce concurrency; this is not a full1M-prompt benchmark."
+}

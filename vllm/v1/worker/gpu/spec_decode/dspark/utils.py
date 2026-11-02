@@ -106,7 +106,7 @@ def load_dspark_model(target_model: nn.Module, vllm_config: VllmConfig) -> nn.Mo
             vllm_config=draft_vllm_config, model_config=draft_model_config
         )
 
-    if getattr(draft_model, "prefill_context_kv_only", False):
+    if speculative_config.prefill_context_kv_only:
         return draft_model
 
     target_language_model = (

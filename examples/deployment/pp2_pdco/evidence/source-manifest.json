@@ -2,8 +2,11 @@
   "base_commit": "65bad2204be2c848652e6f2c1c888239212ed2f2",
   "base_repository": "https://github.com/Ar-zhou/vllm-zh",
   "base_branch": "deploy/pp4-dspark-swa-1p1d-v031",
-  "description": "Executed GQA runtime sources with packaging-only license/import/format normalization; no algorithm changes",
-  "files": [
+  "description": "Previously executed combined GQA/MLA PP2 PDCO implementation, with license/import/format normalization and parent SWA group fix",
+  "mla_overlay": {
+    "description": "Previously executed PP2 MLA + PDCO sources, including physical-stride addressing and TP auxiliary-state reduction; retain GQA cache-group generalization from the parent commit"
+  },
+  "gqa_parent_files": [
     {
       "file": "vllm/model_executor/models/qwen3_dspark.py",
       "runtime_sha256": "9703f5c9257d9c52f4a3f9c1680035cc4e2a5340784874eb803c9a98be34ea39",
@@ -34,5 +37,86 @@
       "runtime_sha256": "a8ab76ceda681d7bf0d949e0766a5c466634655496d893010c447d431c30ffc6",
       "packaged_sha256": "a8ab76ceda681d7bf0d949e0766a5c466634655496d893010c447d431c30ffc6"
     }
-  ]
+  ],
+  "gqa_parent_commit": "27cfc19",
+  "files": [
+    {
+      "file": "vllm/config/speculative.py",
+      "runtime_sha256": "b99725ab0b30aa6ce14a6823c590183d1321b5a205463fd3b8032340c2f45920",
+      "packaged_sha256": "b99725ab0b30aa6ce14a6823c590183d1321b5a205463fd3b8032340c2f45920",
+      "body_ast_matches_executed_runtime": true
+    },
+    {
+      "file": "vllm/model_executor/models/glm_dspark_mla.py",
+      "runtime_sha256": "1fcfa6d045c04a2176bb7b730063fd26b1dc5495cfdfe8e7e1acb1724cb86d68",
+      "packaged_sha256": "1fcfa6d045c04a2176bb7b730063fd26b1dc5495cfdfe8e7e1acb1724cb86d68",
+      "body_ast_matches_executed_runtime": true
+    },
+    {
+      "file": "vllm/model_executor/models/qwen3_dspark.py",
+      "runtime_sha256": "6fe4a2d4401f015c42708b72004f67b6b3b0078aa7207157c787d11d1293af8b",
+      "packaged_sha256": "6fe4a2d4401f015c42708b72004f67b6b3b0078aa7207157c787d11d1293af8b",
+      "body_ast_matches_executed_runtime": true
+    },
+    {
+      "file": "vllm/model_executor/models/registry.py",
+      "runtime_sha256": "5509de56924e4b9ccf2155d3f597d7646a0308d04e285d9b65a9efdab837e51d",
+      "packaged_sha256": "5509de56924e4b9ccf2155d3f597d7646a0308d04e285d9b65a9efdab837e51d",
+      "body_ast_matches_executed_runtime": true
+    },
+    {
+      "file": "vllm/transformers_utils/configs/speculators/algos.py",
+      "runtime_sha256": "95114a9ed5011981a5dbba3bce72d4950812b55c6e87e9b2070fb45e89b3ec71",
+      "packaged_sha256": "95114a9ed5011981a5dbba3bce72d4950812b55c6e87e9b2070fb45e89b3ec71",
+      "body_ast_matches_executed_runtime": true
+    },
+    {
+      "file": "vllm/transformers_utils/model_arch_config_convertor.py",
+      "runtime_sha256": "2ce10b9dae8d7ed85b1bb534b76de7161bc3464e7040f3844e0e83cf8ed6549e",
+      "packaged_sha256": "2ce10b9dae8d7ed85b1bb534b76de7161bc3464e7040f3844e0e83cf8ed6549e",
+      "body_ast_matches_executed_runtime": true
+    },
+    {
+      "file": "vllm/v1/attention/backends/mla/dspark.py",
+      "runtime_sha256": "cbc703181de394b3f5bcebeddd47c0be71abe4f37eb32085eee78925e4a581d8",
+      "packaged_sha256": "f2255fda65d04207def9f68f287a94e7da3e72cc7bcfe74a236772b095ce4963",
+      "body_ast_matches_executed_runtime": true
+    },
+    {
+      "file": "vllm/model_executor/models/dspark_context_kv.py",
+      "runtime_sha256": "8c172af538f969e0b65963c8ad17f71d4ecaf558b7b6ddabe694e9add6a0ae72",
+      "packaged_sha256": "572b7b3eb8db4869f7b919ed120ac7494c4285ce7a9f2afe0f188936f370626c",
+      "body_ast_matches_executed_runtime": true
+    },
+    {
+      "file": "vllm/v1/worker/gpu/spec_decode/dflash/speculator.py",
+      "runtime_sha256": "71341612bdf380af51e8666a5867ef4754e40cddb780869d9640f5f9d0836e23",
+      "packaged_sha256": "71341612bdf380af51e8666a5867ef4754e40cddb780869d9640f5f9d0836e23",
+      "body_ast_matches_executed_runtime": true
+    },
+    {
+      "file": "vllm/v1/worker/gpu/spec_decode/dspark/speculator.py",
+      "runtime_sha256": "cab0fef77c9d8019ee78320338f127412a155b887d94eb90e898e2035d585bf9",
+      "packaged_sha256": "cab0fef77c9d8019ee78320338f127412a155b887d94eb90e898e2035d585bf9",
+      "body_ast_matches_executed_runtime": true
+    },
+    {
+      "file": "vllm/v1/worker/gpu/spec_decode/dspark/utils.py",
+      "runtime_sha256": "d0bf9750dc2bf898bd305a082dbe95b8f87d1c28dda0abd81528f57c8a57a47b",
+      "packaged_sha256": "d0bf9750dc2bf898bd305a082dbe95b8f87d1c28dda0abd81528f57c8a57a47b",
+      "body_ast_matches_executed_runtime": true
+    },
+    {
+      "file": "vllm/models/deepseek_v32/nvidia/model.py",
+      "runtime_sha256": "58f92ce92357e4a63e96fb79acfde6a9aa73fb33996e69918498917c87b698b0",
+      "packaged_sha256": "eb129b3f21e052b44198f5ca0bcd16da732eb7ea6b176214a13ab2f7295416d8",
+      "body_ast_matches_executed_runtime": true
+    },
+    {
+      "file": "vllm/v1/core/kv_cache_utils.py",
+      "runtime_sha256": "965aba0c3782599908b9053c30ba6b1762eaebd8ea2291c0a7a3780fa2d65b45",
+      "packaged_sha256": "b4b093e7e1e4bfb4c69bd95d94337e949650978b34f51a1f0994db9fcb81690c"
+    }
+  ],
+  "snapshot_scope": "Historical 2026-10-25 profile; current MLA graph/window evidence is in ../../glm53_mla_dspark/evidence"
 }

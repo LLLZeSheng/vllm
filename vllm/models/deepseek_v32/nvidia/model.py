@@ -8,7 +8,11 @@ import torch
 
 import vllm.envs as envs
 from vllm.config import VllmConfig
-from vllm.distributed import get_pp_group
+from vllm.distributed import (
+    get_pp_group,
+    get_tensor_model_parallel_world_size,
+    tensor_model_parallel_all_reduce,
+)
 from vllm.forward_context import get_forward_context, is_forward_context_available
 from vllm.model_executor.layers.fused_embed_norm import (
     fused_embed_norm,
@@ -52,6 +56,21 @@ from vllm.v1.attention.backends.mla.index_group import (
 )
 
 from .glm52_low_latency_gemm import enable_glm52_low_latency_gemm
+
+
+def _materialize_aux_hidden_state(
+    hidden_states: torch.Tensor,
+    residual: torch.Tensor | None,
+    use_sequence_parallel: bool,
+) -> torch.Tensor:
+    if residual is None:
+        return hidden_states
+    # Decoder MLP/MoE returns an un-reduced TP partial. The next RMSNorm
+    # performs the deferred all-reduce, but auxiliary capture precedes it.
+    # Never mutate that partial: the normal decoder still needs to reduce it.
+    if not use_sequence_parallel and get_tensor_model_parallel_world_size() > 1:
+        hidden_states = tensor_model_parallel_all_reduce(hidden_states.clone())
+    return hidden_states + residual
 
 
 class DeepseekV32DecoderLayer(torch.nn.Module):
@@ -312,7 +331,11 @@ class DeepseekV32Model(torch.nn.Module, EagleModelMixin):
             else []
         )
         aux_hidden_states = []
-        if aux_pp and get_pp_group().is_first_rank and 0 in self.aux_hidden_state_layers:
+        if (
+            aux_pp
+            and get_pp_group().is_first_rank
+            and 0 in self.aux_hidden_state_layers
+        ):
             aux_hidden_states.append(hidden_states)
         for idx, layer in enumerate(
             islice(self.layers, self.start_layer, self.end_layer),
@@ -320,12 +343,18 @@ class DeepseekV32Model(torch.nn.Module, EagleModelMixin):
         ):
             if not aux_pp and idx in self.aux_hidden_state_layers:
                 aux_hidden_states.append(
-                    hidden_states if residual is None else hidden_states + residual
+                    _materialize_aux_hidden_state(
+                        hidden_states, residual, self.use_sequence_parallel
+                    )
                 )
             hidden_states, residual = layer(positions, hidden_states, residual, attn_in)
             attn_in = None
             if aux_pp and idx + 1 in self.aux_hidden_state_layers:
-                aux_hidden_states.append(hidden_states + residual)
+                aux_hidden_states.append(
+                    _materialize_aux_hidden_state(
+                        hidden_states, residual, self.use_sequence_parallel
+                    )
+                )
 
         if not get_pp_group().is_last_rank:
             assert not self.use_sequence_parallel, (

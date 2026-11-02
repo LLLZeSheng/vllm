@@ -41,10 +41,10 @@ class DSparkSpeculator(DFlashSpeculator):
     _speculator_name = "DSpark"
 
     def __init__(self, vllm_config: VllmConfig, device: torch.device):
+        self.prefill_context_kv_only = (
+            vllm_config.speculative_config.prefill_context_kv_only
+        )
         super().__init__(vllm_config, device)
-        from vllm.model_executor.models.dspark_context_kv import context_kv_only
-
-        self.prefill_context_kv_only = context_kv_only(vllm_config)
 
         # Whether to sample from the anchor position. When True, uses anchor-as-first
         # (N slots, each position predicts the next token). When False, uses 1+N
@@ -85,9 +85,38 @@ class DSparkSpeculator(DFlashSpeculator):
         self.use_confidence_head: bool = False
 
     def init_cudagraph_manager(self, cudagraph_mode: CUDAGraphMode) -> None:
+        self._local_dense_mla = (
+            type(self.model).__name__ == "GlmDSparkMLAForCausalLM"
+            and self.vllm_config.parallel_config.tensor_parallel_size == 1
+            and self.dcp_size == 1
+            and not self.prefill_context_kv_only
+        )
         if self.prefill_context_kv_only:
             cudagraph_mode = CUDAGraphMode.NONE
         super().init_cudagraph_manager(cudagraph_mode)
+        # A TP1 MLA draft has eight query rows per request, independently of
+        # the target verifier's nine rows. Avoid rounding a one-request draft
+        # up to two requests using the target's capture grid.
+        if self._local_dense_mla:
+            import copy
+
+            from vllm.v1.worker.gpu.spec_decode.dflash.cudagraph import (
+                DFlashCudaGraphManager,
+            )
+
+            config = copy.copy(self.vllm_config)
+            config.compilation_config = copy.copy(config.compilation_config)
+            counts = list(range(1, 9)) + [12, 16, 20, 24, 28, 32]
+            counts = [n for n in counts if n <= self.max_num_reqs]
+            sizes = [n * self.num_query_per_req for n in counts]
+            config.compilation_config.cudagraph_capture_sizes = sizes
+            config.compilation_config.max_cudagraph_capture_size = max(sizes)
+            self.query_cudagraph_manager = DFlashCudaGraphManager(
+                config,
+                self.device,
+                self.query_cudagraph_manager.cudagraph_mode,
+                decode_query_len=self.num_query_per_req,
+            )
 
     def capture(self) -> None:
         if not self.prefill_context_kv_only:
