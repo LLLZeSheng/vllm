@@ -3,12 +3,64 @@
 """Exercise causal windows and live-batch changes in the MLA graph path."""
 
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import torch
 
+from vllm.model_executor.models.glm_dspark_mla import DSparkMLACache
 from vllm.platforms import current_platform
 from vllm.v1.attention.backends.mla.dspark_upstream_window import attention
 from vllm.v1.attention.ops.triton_decode_attention import decode_attention_fwd
+
+
+class TestGlmDSparkMLACacheSpec(unittest.TestCase):
+    def test_cache_spec_honors_bf16_and_fp8_storage(self):
+        config = SimpleNamespace(cache_config=SimpleNamespace(block_size=64))
+        for window in [None, 8192]:
+            for dtype in ["auto", "bfloat16", "fp8", "fp8_e4m3"]:
+                with self.subTest(window=window, dtype=dtype):
+                    cache = SimpleNamespace(kv_cache_dtype=dtype, sliding_window=window)
+                    spec = DSparkMLACache.get_kv_cache_spec(cache, config)
+                    fp8 = dtype in ("fp8", "fp8_e4m3")
+                    self.assertEqual(
+                        spec.dtype, torch.float8_e4m3fn if fp8 else torch.bfloat16
+                    )
+                    self.assertEqual(spec.page_size_bytes, 64 * 576 * (1 if fp8 else 2))
+
+    def test_unsupported_fp8_format_is_rejected(self):
+        cache = SimpleNamespace(kv_cache_dtype="fp8_e5m2", sliding_window=8192)
+        config = SimpleNamespace(cache_config=SimpleNamespace(block_size=64))
+        with self.assertRaisesRegex(ValueError, "E4M3"):
+            DSparkMLACache.get_kv_cache_spec(cache, config)
+
+    def test_context_only_producer_accepts_fp8_without_changing_config(self):
+        from vllm.model_executor.models.dspark_context_kv import MLAContextKVAttention
+
+        config = SimpleNamespace(
+            kv_lora_rank=512,
+            qk_rope_head_dim=64,
+            num_attention_heads=64,
+            rope_parameters={"rope_theta": 8000000},
+            hidden_size=6144,
+            rms_norm_eps=1e-5,
+        )
+        for dtype in ["bfloat16", "fp8", "fp8_e4m3"]:
+            with self.subTest(dtype=dtype):
+                cache_config = SimpleNamespace(cache_dtype=dtype)
+                with (
+                    patch(
+                        "vllm.model_executor.models.dspark_context_kv."
+                        "_resolve_layer_attention",
+                        return_value=(8192, True),
+                    ),
+                    patch(
+                        "vllm.model_executor.models.glm_dspark_mla.DSparkMLACache",
+                        return_value=torch.nn.Identity(),
+                    ),
+                ):
+                    MLAContextKVAttention(config, 0, cache_config, "model.layers.0")
+                self.assertEqual(cache_config.cache_dtype, dtype)
 
 
 @unittest.skipUnless(current_platform.is_cuda(), "CUDA is required")
@@ -72,6 +124,57 @@ class TestGlmDSparkMLA(unittest.TestCase):
                 args = self.inputs([length], [8])
                 expected = self.dense(args, [length], [8], 8192)
                 self.assert_reference(attention(*args, True, 8192), expected)
+
+    def test_fp8_cache_writer_preserves_strides_padding_and_scale(self):
+        for scale in [0.5, 1.0, 2.0]:
+            with self.subTest(scale=scale):
+                backing = torch.zeros(
+                    4, 64, 5, 576, device="cuda", dtype=torch.float8_e4m3fn
+                )
+                cache = backing[:, :, 3, :]
+                latent = torch.randn(9, 512, device="cuda", dtype=torch.bfloat16)
+                rotary = torch.randn(9, 64, device="cuda", dtype=torch.bfloat16)
+                slots = torch.tensor([0, 1, 63, 64, 70, 127, 128, -1], device="cuda")
+                layer = SimpleNamespace(
+                    kv_cache_dtype="fp8",
+                    kv_cache=cache,
+                    _k_scale=torch.tensor(scale, device="cuda", dtype=torch.float32),
+                )
+                DSparkMLACache.store(layer, latent, rotary, slots)
+                expected = (
+                    (torch.cat([latent[:7], rotary[:7]], dim=-1).float() / scale)
+                    .to(torch.float8_e4m3fn)
+                    .float()
+                )
+                actual = cache[slots[:7] // 64, slots[:7] % 64].float()
+                torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+                for i in [0, 1, 2, 4]:
+                    self.assertEqual(backing[:, :, i, :].float().count_nonzero(), 0)
+                self.assertEqual(cache[-1, -1].float().count_nonzero(), 0)
+
+    def test_fp8_attention_matches_dequantized_reference(self):
+        args = self.inputs([9000], [8])
+        q, cache, table, starts, lengths = args
+        cache = cache.to(torch.float8_e4m3fn)
+        for scale in [0.5, 1.0, 2.0]:
+            with self.subTest(scale=scale):
+                expected = self.dense(
+                    (q, cache.float() * scale, table, starts, lengths),
+                    [9000],
+                    [8],
+                    8192,
+                )
+                actual = attention(
+                    q,
+                    cache,
+                    table,
+                    starts,
+                    lengths,
+                    True,
+                    8192,
+                    kv_scale=torch.tensor(scale, device="cuda", dtype=torch.float32),
+                )
+                self.assert_reference(actual, expected)
 
     def test_released_prefix_pages_are_not_read(self):
         args = self.inputs([16407], [8])

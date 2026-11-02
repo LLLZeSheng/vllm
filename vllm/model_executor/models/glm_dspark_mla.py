@@ -49,11 +49,17 @@ class DSparkMLACache(Attention):
     """Register the latent cache with the standard vLLM cache manager."""
 
     def get_kv_cache_spec(self, vllm_config):
+        if self.kv_cache_dtype not in ("auto", "bfloat16", "fp8", "fp8_e4m3"):
+            raise ValueError("GLM MLA draft cache supports BF16 or FP8 E4M3 only")
         values = dict(
             block_size=vllm_config.cache_config.block_size,
             num_kv_heads=1,
             head_size=576,
-            dtype=torch.bfloat16,
+            dtype=(
+                torch.float8_e4m3fn
+                if self.kv_cache_dtype in ("fp8", "fp8_e4m3")
+                else torch.bfloat16
+            ),
         )
         if self.sliding_window is not None:
             return SlidingWindowMLASpec(**values, sliding_window=self.sliding_window)
@@ -68,6 +74,21 @@ class DSparkMLACache(Attention):
 
     def get_attn_backend(self):
         return DSparkMLABackend
+
+    def store(self, latent, rotary, slots):
+        from vllm import _custom_ops as ops
+
+        fp8 = self.kv_cache_dtype in ("fp8", "fp8_e4m3")
+        cache = self.kv_cache.view(torch.uint8) if fp8 else self.kv_cache
+        n = min(latent.shape[0], slots.numel())
+        ops.concat_and_cache_mla(
+            latent[:n],
+            rotary[:n],
+            cache,
+            slots[:n],
+            self.kv_cache_dtype if fp8 else "auto",
+            self._k_scale,
+        )
 
 
 class GlmDSparkMLAAttention(nn.Module):
@@ -143,19 +164,7 @@ class GlmDSparkMLAAttention(nn.Module):
         latent = self.kv_a_layernorm(z[:, :512])
         rotary = self.rope(z[:, 512:].unsqueeze(1), positions).squeeze(1)
         if slots is not None:
-            # Use the existing native MLA cache writer: no boolean indexing,
-            # device-to-host shape synchronization, or separate scatter kernel.
-            from vllm import _custom_ops as ops
-
-            n = min(latent.shape[0], slots.numel())
-            ops.concat_and_cache_mla(
-                latent[:n],
-                rotary[:n],
-                self.attn.kv_cache,
-                slots[:n],
-                "auto",
-                self.attn._k_scale,
-            )
+            self.attn.store(latent, rotary, slots)
 
     def forward(self, positions, hidden_states):
         context = get_forward_context()
@@ -186,6 +195,7 @@ class GlmDSparkMLAAttention(nn.Module):
             self.causal,
             self.sliding_window or 0,
             num_actual_tokens=metadata.num_actual_tokens,
+            kv_scale=self.attn._k_scale,
         )
         values = torch.bmm(latent.transpose(0, 1), up[:, 192:].transpose(1, 2))
         values = values.transpose(0, 1).reshape(-1, self.num_heads * 256)

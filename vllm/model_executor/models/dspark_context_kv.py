@@ -6,7 +6,6 @@ import regex as re
 import torch
 from torch import nn
 
-from vllm import _custom_ops as ops
 from vllm.config import get_current_vllm_config
 from vllm.distributed import get_tensor_model_parallel_world_size
 from vllm.logger import init_logger
@@ -227,8 +226,8 @@ class MLAContextKVAttention(nn.Module):
         dimensions = (config.kv_lora_rank, config.qk_rope_head_dim)
         if dimensions != (512, 64):
             raise ValueError(f"Unsupported DSpark MLA cache dimensions: {dimensions}")
-        if cache_config.cache_dtype not in ("auto", "bfloat16"):
-            raise ValueError("GLM MLA context KV requires BF16 draft cache")
+        if cache_config.cache_dtype not in ("auto", "bfloat16", "fp8", "fp8_e4m3"):
+            raise ValueError("GLM MLA context KV requires BF16 or FP8 E4M3 cache")
         self.num_heads = config.num_attention_heads
         self.sliding_window, self.causal = _resolve_layer_attention(config, layer_idx)
         self.rope_theta = config.rope_parameters["rope_theta"]
@@ -251,13 +250,4 @@ class MLAContextKVAttention(nn.Module):
         latent = self.kv_a_layernorm(z[:, :512])
         rotary = self.rope(z[:, 512:].unsqueeze(1), positions).squeeze(1)
         if slots is not None:
-            # The existing MLA insertion kernel handles strided BLHNC views,
-            # 64-bit block offsets and padded (-1) slots without host sync.
-            ops.concat_and_cache_mla(
-                latent,
-                rotary,
-                self.attn.kv_cache,
-                slots,
-                "auto",
-                self.attn._k_scale,
-            )
+            self.attn.store(latent, rotary, slots)
