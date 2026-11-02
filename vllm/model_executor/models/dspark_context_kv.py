@@ -5,6 +5,7 @@
 import regex as re
 import torch
 from torch import nn
+from torch.nn import functional as F
 
 from vllm.config import get_current_vllm_config
 from vllm.distributed import get_tensor_model_parallel_world_size
@@ -135,6 +136,16 @@ class DSparkContextKVModel(DFlashQwen3Model):
 
     def _build_fused_kv_buffers(self):
         if self.is_mla:
+            self.register_buffer(
+                "_fused_mla_context_kv_weight",
+                torch.cat(
+                    [
+                        layer.self_attn.kv_a_proj_with_mqa.weight.detach()
+                        for layer in self.layers
+                    ]
+                ),
+                persistent=False,
+            )
             return
         attns = [layer.self_attn for layer in self.layers]
         first = attns[0]
@@ -207,13 +218,18 @@ class DSparkContextKVModel(DFlashQwen3Model):
         context_states = rms(
             context_states, self.hidden_norm.weight, self.config.rms_norm_eps
         )
+        if not hasattr(self, "_fused_mla_context_kv_weight"):
+            self._build_fused_kv_buffers()
+        projected = F.linear(context_states, self._fused_mla_context_kv_weight).view(
+            context_states.shape[0], len(self.layers), 576
+        )
         for i, layer in enumerate(self.layers):
             slots = (
                 context_slot_mapping[i]
                 if isinstance(context_slot_mapping, (list, tuple))
                 else context_slot_mapping
             )
-            layer.self_attn.store(context_states, context_positions, slots)
+            layer.self_attn.store_projected(projected[:, i], context_positions, slots)
 
 
 class MLAContextKVAttention(nn.Module):
@@ -247,6 +263,9 @@ class MLAContextKVAttention(nn.Module):
 
     def store(self, hidden_states, positions, slots):
         z = self.kv_a_proj_with_mqa(hidden_states)
+        self.store_projected(z, positions, slots)
+
+    def store_projected(self, z, positions, slots):
         latent = self.kv_a_layernorm(z[:, :512])
         rotary = self.rope(z[:, 512:].unsqueeze(1), positions).squeeze(1)
         if slots is not None:

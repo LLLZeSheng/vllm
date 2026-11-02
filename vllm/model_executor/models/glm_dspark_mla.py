@@ -161,6 +161,9 @@ class GlmDSparkMLAAttention(nn.Module):
 
     def store(self, hidden_states, positions, slots):
         z = self.kv_a_proj_with_mqa(hidden_states)
+        self.store_projected(z, positions, slots)
+
+    def store_projected(self, z, positions, slots):
         latent = self.kv_a_layernorm(z[:, :512])
         rotary = self.rope(z[:, 512:].unsqueeze(1), positions).squeeze(1)
         if slots is not None:
@@ -245,6 +248,11 @@ class GlmDSparkMLAModel(Qwen3DSparkModel):
         context_states = rms(
             context_states, self.hidden_norm.weight, self.config.rms_norm_eps
         )
+        if not hasattr(self, "_fused_mla_context_kv_weight"):
+            self._build_fused_kv_buffers()
+        projected = F.linear(context_states, self._fused_mla_context_kv_weight).view(
+            context_states.shape[0], len(self.layers), 576
+        )
         for i, layer in enumerate(self.layers):
             slots = (
                 context_slot_mapping[i]
@@ -252,11 +260,21 @@ class GlmDSparkMLAModel(Qwen3DSparkModel):
                 else context_slot_mapping
             )
             if slots is not None:
-                layer.self_attn.store(context_states, context_positions, slots)
+                layer.self_attn.store_projected(
+                    projected[:, i], context_positions, slots
+                )
 
     def _build_fused_kv_buffers(self):
-        # GQA's fused QKV buffers are replaced by each layer's latent projection.
-        pass
+        self.register_buffer(
+            "_fused_mla_context_kv_weight",
+            torch.cat(
+                [
+                    layer.self_attn.kv_a_proj_with_mqa.weight.detach()
+                    for layer in self.layers
+                ]
+            ),
+            persistent=False,
+        )
 
 
 class GlmDSparkMLAForCausalLM(Qwen3DSparkForCausalLM):

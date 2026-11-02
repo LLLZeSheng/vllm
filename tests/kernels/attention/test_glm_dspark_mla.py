@@ -7,8 +7,15 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import torch
+from torch import nn
+from torch.nn import functional as F
 
-from vllm.model_executor.models.glm_dspark_mla import DSparkMLACache
+from vllm.model_executor.models.dspark_context_kv import DSparkContextKVModel
+from vllm.model_executor.models.glm_dspark_mla import (
+    DSparkMLACache,
+    GlmDSparkMLAModel,
+    rms,
+)
 from vllm.platforms import current_platform
 from vllm.v1.attention.backends.mla.dspark_upstream_window import attention
 from vllm.v1.attention.ops.triton_decode_attention import decode_attention_fwd
@@ -61,6 +68,64 @@ class TestGlmDSparkMLACacheSpec(unittest.TestCase):
                 ):
                     MLAContextKVAttention(config, 0, cache_config, "model.layers.0")
                 self.assertEqual(cache_config.cache_dtype, dtype)
+
+
+class TestGlmDSparkMLAContextProjection(unittest.TestCase):
+    def test_producer_and_drafter_match_separate_layer_projections(self):
+        class RecordingAttention(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.kv_a_proj_with_mqa = nn.Linear(4, 576, bias=False)
+                self.written = None
+
+            def store_projected(self, projected, positions, slots):
+                if slots is not None:
+                    self.written = projected.clone(), positions, slots
+
+        torch.manual_seed(7)
+        states = torch.randn(3, 4)
+        positions = torch.arange(3)
+        slots = [torch.arange(3), None, torch.arange(3), None, torch.arange(3)]
+        for model_cls in (DSparkContextKVModel, GlmDSparkMLAModel):
+            with self.subTest(model=model_cls.__name__):
+                model = nn.Module()
+                model.layers = nn.ModuleList()
+                for _ in range(5):
+                    layer = nn.Module()
+                    layer.self_attn = RecordingAttention()
+                    model.layers.append(layer)
+                model.hidden_norm = nn.Module()
+                model.hidden_norm.register_buffer("weight", torch.randn(4))
+                model.config = SimpleNamespace(rms_norm_eps=1e-5)
+                model.is_mla = True
+
+                normalized = rms(states, model.hidden_norm.weight, 1e-5)
+                expected = [
+                    layer.self_attn.kv_a_proj_with_mqa(normalized)
+                    for layer in model.layers
+                ]
+                model_cls._build_fused_kv_buffers(model)
+                self.assertEqual(model._fused_mla_context_kv_weight.shape, (2880, 4))
+                self.assertFalse(model._fused_mla_context_kv_weight.requires_grad)
+
+                original_linear = F.linear
+                with patch(
+                    "torch.nn.functional.linear", wraps=original_linear
+                ) as linear:
+                    model_cls.precompute_and_store_context_kv(
+                        model, states, positions, slots
+                    )
+                self.assertEqual(linear.call_count, 1)
+                for i, layer in enumerate(model.layers):
+                    if slots[i] is None:
+                        self.assertIsNone(layer.self_attn.written)
+                    else:
+                        written, written_positions, written_slots = (
+                            layer.self_attn.written
+                        )
+                        torch.testing.assert_close(written, expected[i])
+                        self.assertIs(written_positions, positions)
+                        self.assertIs(written_slots, slots[i])
 
 
 @unittest.skipUnless(current_platform.is_cuda(), "CUDA is required")
