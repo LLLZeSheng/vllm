@@ -11,8 +11,46 @@ previous MLA extension and the new validated graph path. It is not a second
 upstream submission competing with [GLM MLA PR #62410](https://github.com/vllm-project/vllm/pull/62410).
 Windowed attention reuses [PR #63795](https://github.com/vllm-project/vllm/pull/63795),
 commit `3de196f40700bf732ab260bf74883ad13c21f02a`, in the existing
-`vllm/v1/attention/ops/triton_decode_attention.py` module. No duplicate custom
-attention kernel is added.
+`vllm/v1/attention/ops/triton_decode_attention.py` module. An opt-in FlashMLA
+adapter is also available for the native 576/512 geometry described below.
+
+## FlashMLA FP8 backend
+
+Set these variables on **both P and D** to select FlashMLA without context
+projection fusion:
+
+```bash
+export VLLM_GLM_DSPARK_MLA_FLASHMLA=1
+export VLLM_GLM_DSPARK_MLA_CONTEXT_KV_FUSION=0
+```
+
+Use `"kv_cache_dtype":"fp8"` in the speculative config on both sides.
+This backend requires 64 local query heads, latent512 + RoPE64, causal
+SWA8192, and an installed FlashMLA sparse extension on a supported GPU.
+It does not pad model or head dimensions. Defaults retain the Triton backend
+and the existing context-projection fusion behavior.
+
+The adapter enumerates every visible position in each query's exact causal
+window; sparse indices do not drop tokens. Each query gets its own bounds,
+including within an eight-token speculative block. Live window lengths are
+replanned on every invocation, including CUDA Graph replay.
+
+FlashMLA V3 needs a 656-byte record: 512 E4M3 latent bytes, four FP32 scales
+(16 bytes), and 64 BF16 rotary values (128 bytes). Rotary values are rounded
+through E4M3 before packing, preserving the previous fully-FP8 cache's values.
+The record is larger than the previous 576-byte cache. The cache spec declares
+656-byte block-stride alignment: without this, mixed BLHNC pools can have a
+stride incompatible with FlashMLA's TMA descriptor. This is storage alignment,
+not model-dimension padding. SWA allocation still uses the hybrid cache manager.
+
+The [validation evidence](evidence/flashmla-validation.json) records a
+single-host 2P1D comparison using identical step1207 weights and fixed 100
+requests per domain (C8, output cap1024, probability/block verification,
+PDCO, no prefix cache, no context-projection fusion). Both backends completed
+300/300 requests without errors or preemption. Client request-mean TPOT changed
+from 7.353 to 6.094 ms on 0831, 8.520 to 8.049 ms on pct80, and 5.809 to
+5.469 ms on workload. Acceptance lengths and generated outputs differ between
+sampled runs; these end-to-end reductions are not isolated kernel speedups.
 
 ## Implementation and scope
 

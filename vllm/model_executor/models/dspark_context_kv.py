@@ -5,8 +5,9 @@
 import regex as re
 import torch
 from torch import nn
+from torch.nn import functional as F
 
-from vllm import _custom_ops as ops
+import vllm.envs as envs
 from vllm.config import get_current_vllm_config
 from vllm.distributed import get_tensor_model_parallel_world_size
 from vllm.logger import init_logger
@@ -136,6 +137,18 @@ class DSparkContextKVModel(DFlashQwen3Model):
 
     def _build_fused_kv_buffers(self):
         if self.is_mla:
+            if not envs.VLLM_GLM_DSPARK_MLA_CONTEXT_KV_FUSION:
+                return
+            self.register_buffer(
+                "_fused_mla_context_kv_weight",
+                torch.cat(
+                    [
+                        layer.self_attn.kv_a_proj_with_mqa.weight.detach()
+                        for layer in self.layers
+                    ]
+                ),
+                persistent=False,
+            )
             return
         attns = [layer.self_attn for layer in self.layers]
         first = attns[0]
@@ -208,13 +221,27 @@ class DSparkContextKVModel(DFlashQwen3Model):
         context_states = rms(
             context_states, self.hidden_norm.weight, self.config.rms_norm_eps
         )
+        if not envs.VLLM_GLM_DSPARK_MLA_CONTEXT_KV_FUSION:
+            for i, layer in enumerate(self.layers):
+                slots = (
+                    context_slot_mapping[i]
+                    if isinstance(context_slot_mapping, (list, tuple))
+                    else context_slot_mapping
+                )
+                layer.self_attn.store(context_states, context_positions, slots)
+            return
+        if not hasattr(self, "_fused_mla_context_kv_weight"):
+            self._build_fused_kv_buffers()
+        projected = F.linear(context_states, self._fused_mla_context_kv_weight).view(
+            context_states.shape[0], len(self.layers), 576
+        )
         for i, layer in enumerate(self.layers):
             slots = (
                 context_slot_mapping[i]
                 if isinstance(context_slot_mapping, (list, tuple))
                 else context_slot_mapping
             )
-            layer.self_attn.store(context_states, context_positions, slots)
+            layer.self_attn.store_projected(projected[:, i], context_positions, slots)
 
 
 class MLAContextKVAttention(nn.Module):
@@ -227,8 +254,8 @@ class MLAContextKVAttention(nn.Module):
         dimensions = (config.kv_lora_rank, config.qk_rope_head_dim)
         if dimensions != (512, 64):
             raise ValueError(f"Unsupported DSpark MLA cache dimensions: {dimensions}")
-        if cache_config.cache_dtype not in ("auto", "bfloat16"):
-            raise ValueError("GLM MLA context KV requires BF16 draft cache")
+        if cache_config.cache_dtype not in ("auto", "bfloat16", "fp8", "fp8_e4m3"):
+            raise ValueError("GLM MLA context KV requires BF16 or FP8 E4M3 cache")
         self.num_heads = config.num_attention_heads
         self.sliding_window, self.causal = _resolve_layer_attention(config, layer_idx)
         self.rope_theta = config.rope_parameters["rope_theta"]
@@ -248,16 +275,10 @@ class MLAContextKVAttention(nn.Module):
 
     def store(self, hidden_states, positions, slots):
         z = self.kv_a_proj_with_mqa(hidden_states)
+        self.store_projected(z, positions, slots)
+
+    def store_projected(self, z, positions, slots):
         latent = self.kv_a_layernorm(z[:, :512])
         rotary = self.rope(z[:, 512:].unsqueeze(1), positions).squeeze(1)
         if slots is not None:
-            # The existing MLA insertion kernel handles strided BLHNC views,
-            # 64-bit block offsets and padded (-1) slots without host sync.
-            ops.concat_and_cache_mla(
-                latent,
-                rotary,
-                self.attn.kv_cache,
-                slots,
-                "auto",
-                self.attn._k_scale,
-            )
+            self.attn.store(latent, rotary, slots)

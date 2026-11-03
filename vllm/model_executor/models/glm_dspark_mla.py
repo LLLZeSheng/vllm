@@ -6,6 +6,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+import vllm.envs as envs
 from vllm.distributed import get_tensor_model_parallel_world_size
 from vllm.forward_context import get_forward_context
 from vllm.logger import init_logger
@@ -22,8 +23,12 @@ from vllm.model_executor.models.qwen3_dspark import (
     Qwen3DSparkModel,
 )
 from vllm.v1.attention.backends.mla.dspark import DSparkMLABackend
-from vllm.v1.attention.backends.mla.dspark_upstream_window import attention
 from vllm.v1.kv_cache_interface import MLAAttentionSpec, SlidingWindowMLASpec
+
+if envs.VLLM_GLM_DSPARK_MLA_FLASHMLA:
+    from vllm.v1.attention.backends.mla.dspark_flashmla import attention
+else:
+    from vllm.v1.attention.backends.mla.dspark_upstream_window import attention
 
 logger = init_logger(__name__)
 
@@ -49,12 +54,24 @@ class DSparkMLACache(Attention):
     """Register the latent cache with the standard vLLM cache manager."""
 
     def get_kv_cache_spec(self, vllm_config):
+        if self.kv_cache_dtype not in ("auto", "bfloat16", "fp8", "fp8_e4m3"):
+            raise ValueError("GLM MLA draft cache supports BF16 or FP8 E4M3 only")
         values = dict(
             block_size=vllm_config.cache_config.block_size,
             num_kv_heads=1,
             head_size=576,
-            dtype=torch.bfloat16,
+            dtype=(
+                torch.float8_e4m3fn
+                if self.kv_cache_dtype in ("fp8", "fp8_e4m3")
+                else torch.bfloat16
+            ),
         )
+        if envs.VLLM_GLM_DSPARK_MLA_FLASHMLA:
+            if self.kv_cache_dtype not in ("fp8", "fp8_e4m3"):
+                raise ValueError("GLM FlashMLA requires FP8 E4M3 KV cache")
+            if self.sliding_window != 8192 or self.num_heads != 64:
+                raise ValueError("GLM FlashMLA requires SWA8192 and 64 local heads")
+            values.update(head_size=656, dtype=torch.uint8, block_stride_alignment=656)
         if self.sliding_window is not None:
             return SlidingWindowMLASpec(**values, sliding_window=self.sliding_window)
         return MLAAttentionSpec(**values)
@@ -62,12 +79,39 @@ class DSparkMLACache(Attention):
     def bind_kv_cache(self, cache):
         if cache.ndim == 4 and cache.shape[1] == 1:
             cache = cache.squeeze(1)
-        if cache.ndim != 3 or cache.shape[-1] != 576:
-            raise ValueError(f"Expected latent KV cache [..., 576], got {cache.shape}")
+        width = 656 if envs.VLLM_GLM_DSPARK_MLA_FLASHMLA else 576
+        if cache.ndim != 3 or cache.shape[-1] != width:
+            raise ValueError(
+                f"Expected latent KV cache [..., {width}], got {cache.shape}"
+            )
+        if envs.VLLM_GLM_DSPARK_MLA_FLASHMLA and (
+            cache.dtype != torch.uint8 or cache.stride(0) % 656
+        ):
+            raise ValueError("FlashMLA requires packed bytes and aligned block stride")
         self.kv_cache = cache
 
     def get_attn_backend(self):
         return DSparkMLABackend
+
+    def store(self, latent, rotary, slots):
+        if envs.VLLM_GLM_DSPARK_MLA_FLASHMLA:
+            from vllm.v1.attention.backends.mla.dspark_flashmla import store
+
+            store(latent, rotary, self.kv_cache, slots, self._k_scale)
+            return
+        from vllm import _custom_ops as ops
+
+        fp8 = self.kv_cache_dtype in ("fp8", "fp8_e4m3")
+        cache = self.kv_cache.view(torch.uint8) if fp8 else self.kv_cache
+        n = min(latent.shape[0], slots.numel())
+        ops.concat_and_cache_mla(
+            latent[:n],
+            rotary[:n],
+            cache,
+            slots[:n],
+            self.kv_cache_dtype if fp8 else "auto",
+            self._k_scale,
+        )
 
 
 class GlmDSparkMLAAttention(nn.Module):
@@ -140,22 +184,13 @@ class GlmDSparkMLAAttention(nn.Module):
 
     def store(self, hidden_states, positions, slots):
         z = self.kv_a_proj_with_mqa(hidden_states)
+        self.store_projected(z, positions, slots)
+
+    def store_projected(self, z, positions, slots):
         latent = self.kv_a_layernorm(z[:, :512])
         rotary = self.rope(z[:, 512:].unsqueeze(1), positions).squeeze(1)
         if slots is not None:
-            # Use the existing native MLA cache writer: no boolean indexing,
-            # device-to-host shape synchronization, or separate scatter kernel.
-            from vllm import _custom_ops as ops
-
-            n = min(latent.shape[0], slots.numel())
-            ops.concat_and_cache_mla(
-                latent[:n],
-                rotary[:n],
-                self.attn.kv_cache,
-                slots[:n],
-                "auto",
-                self.attn._k_scale,
-            )
+            self.attn.store(latent, rotary, slots)
 
     def forward(self, positions, hidden_states):
         context = get_forward_context()
@@ -186,6 +221,7 @@ class GlmDSparkMLAAttention(nn.Module):
             self.causal,
             self.sliding_window or 0,
             num_actual_tokens=metadata.num_actual_tokens,
+            kv_scale=self.attn._k_scale,
         )
         values = torch.bmm(latent.transpose(0, 1), up[:, 192:].transpose(1, 2))
         values = values.transpose(0, 1).reshape(-1, self.num_heads * 256)
@@ -235,6 +271,21 @@ class GlmDSparkMLAModel(Qwen3DSparkModel):
         context_states = rms(
             context_states, self.hidden_norm.weight, self.config.rms_norm_eps
         )
+        if not envs.VLLM_GLM_DSPARK_MLA_CONTEXT_KV_FUSION:
+            for i, layer in enumerate(self.layers):
+                slots = (
+                    context_slot_mapping[i]
+                    if isinstance(context_slot_mapping, (list, tuple))
+                    else context_slot_mapping
+                )
+                if slots is not None:
+                    layer.self_attn.store(context_states, context_positions, slots)
+            return
+        if not hasattr(self, "_fused_mla_context_kv_weight"):
+            self._build_fused_kv_buffers()
+        projected = F.linear(context_states, self._fused_mla_context_kv_weight).view(
+            context_states.shape[0], len(self.layers), 576
+        )
         for i, layer in enumerate(self.layers):
             slots = (
                 context_slot_mapping[i]
@@ -242,11 +293,23 @@ class GlmDSparkMLAModel(Qwen3DSparkModel):
                 else context_slot_mapping
             )
             if slots is not None:
-                layer.self_attn.store(context_states, context_positions, slots)
+                layer.self_attn.store_projected(
+                    projected[:, i], context_positions, slots
+                )
 
     def _build_fused_kv_buffers(self):
-        # GQA's fused QKV buffers are replaced by each layer's latent projection.
-        pass
+        if not envs.VLLM_GLM_DSPARK_MLA_CONTEXT_KV_FUSION:
+            return
+        self.register_buffer(
+            "_fused_mla_context_kv_weight",
+            torch.cat(
+                [
+                    layer.self_attn.kv_a_proj_with_mqa.weight.detach()
+                    for layer in self.layers
+                ]
+            ),
+            persistent=False,
+        )
 
 
 class GlmDSparkMLAForCausalLM(Qwen3DSparkForCausalLM):

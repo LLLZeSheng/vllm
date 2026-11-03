@@ -304,6 +304,8 @@ if TYPE_CHECKING:
     VLLM_MULTI_STREAM_GEMM_TOKEN_THRESHOLD: int = 1024
     VLLM_COMPILE_CACHE_SAVE_FORMAT: Literal["binary", "unpacked"] = "binary"
     VLLM_USE_V2_MODEL_RUNNER: bool | None = None
+    VLLM_GLM_DSPARK_MLA_FLASHMLA: bool = False
+    VLLM_GLM_DSPARK_MLA_CONTEXT_KV_FUSION: bool = True
     VLLM_LOG_MODEL_INSPECTION: bool = False
     VLLM_DEBUG_MFU_METRICS: bool = False
     VLLM_WEIGHT_OFFLOADING_DISABLE_PIN_MEMORY: bool = False
@@ -2091,6 +2093,13 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # Flag to control the v2 model runner. If unset, use config defaults.
     "VLLM_USE_V2_MODEL_RUNNER": lambda: maybe_convert_bool(
         os.getenv("VLLM_USE_V2_MODEL_RUNNER", None)
+    ),
+    # Opt in to native 576/512 FlashMLA with its packed FP8 cache ABI.
+    "VLLM_GLM_DSPARK_MLA_FLASHMLA": lambda: bool(
+        int(os.getenv("VLLM_GLM_DSPARK_MLA_FLASHMLA", "0"))
+    ),
+    "VLLM_GLM_DSPARK_MLA_CONTEXT_KV_FUSION": lambda: bool(
+        int(os.getenv("VLLM_GLM_DSPARK_MLA_CONTEXT_KV_FUSION", "1"))
     ),
     # Log model inspection after loading.
     # If enabled, logs a transformers-style hierarchical view of the model

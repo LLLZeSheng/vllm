@@ -11,7 +11,9 @@ import torch
 from vllm.v1.attention.ops.triton_decode_attention import decode_attention_fwd
 
 
-def attention(q, z, table, starts, lengths, causal, window, num_actual_tokens=None):
+def attention(
+    q, z, table, starts, lengths, causal, window, num_actual_tokens=None, kv_scale=None
+):
     """Attend query rows to paged latent512+rope64 keys and latent512 values.
 
     The per-request lengths include the query block. Each causal query ends
@@ -52,7 +54,11 @@ def attention(q, z, table, starts, lengths, causal, window, num_actual_tokens=No
     )
     out = torch.empty((tokens, heads, 512), device=q.device, dtype=q.dtype)
     lse = torch.empty((tokens, heads), device=q.device, dtype=torch.float32)
-    scale = torch.ones((), device=q.device, dtype=torch.float32)
+    scale = (
+        torch.ones((), device=q.device, dtype=torch.float32)
+        if kv_scale is None
+        else kv_scale
+    )
     keys = z.unsqueeze(-2)
     decode_attention_fwd(
         q,
