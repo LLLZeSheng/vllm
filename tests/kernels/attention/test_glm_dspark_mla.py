@@ -10,6 +10,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+import vllm.envs as envs
 from vllm.model_executor.models.dspark_context_kv import DSparkContextKVModel
 from vllm.model_executor.models.glm_dspark_mla import (
     DSparkMLACache,
@@ -22,6 +23,27 @@ from vllm.v1.attention.ops.triton_decode_attention import decode_attention_fwd
 
 
 class TestGlmDSparkMLACacheSpec(unittest.TestCase):
+    def test_flashmla_cache_declares_record_and_block_stride_alignment(self):
+        config = SimpleNamespace(cache_config=SimpleNamespace(block_size=64))
+        cache = SimpleNamespace(kv_cache_dtype="fp8", sliding_window=8192, num_heads=64)
+        with patch.object(envs, "VLLM_GLM_DSPARK_MLA_FLASHMLA", True):
+            spec = DSparkMLACache.get_kv_cache_spec(cache, config)
+        self.assertEqual(spec.dtype, torch.uint8)
+        self.assertEqual(spec.head_size, 656)
+        self.assertEqual(spec.block_stride_alignment, 656)
+        self.assertEqual(spec.sliding_window, 8192)
+
+    def test_flashmla_rejects_non_fp8_cache(self):
+        config = SimpleNamespace(cache_config=SimpleNamespace(block_size=64))
+        cache = SimpleNamespace(
+            kv_cache_dtype="bfloat16", sliding_window=8192, num_heads=64
+        )
+        with (
+            patch.object(envs, "VLLM_GLM_DSPARK_MLA_FLASHMLA", True),
+            self.assertRaisesRegex(ValueError, "requires FP8"),
+        ):
+            DSparkMLACache.get_kv_cache_spec(cache, config)
+
     def test_cache_spec_honors_bf16_and_fp8_storage(self):
         config = SimpleNamespace(cache_config=SimpleNamespace(block_size=64))
         for window in [None, 8192]:
@@ -349,6 +371,68 @@ class TestGlmDSparkMLA(unittest.TestCase):
                 expected = (scores * (128**-0.5)).softmax(-1)
                 expected = expected @ values[0, start:13, 0].float()
                 self.assert_reference(out[0, 0], expected.to(q.dtype))
+
+
+@unittest.skipUnless(current_platform.is_cuda(), "CUDA is required")
+class TestGlmDSparkFlashMLA(unittest.TestCase):
+    def test_packed_fp8_preserves_values_causal_windows_and_live_graph_rows(self):
+        from vllm.v1.attention.backends.mla import dspark_flashmla
+        from vllm.v1.attention.ops.flashmla import is_flashmla_sparse_supported
+
+        if not is_flashmla_sparse_supported()[0]:
+            self.skipTest(
+                "FlashMLA sparse requires a supported GPU and native extension"
+            )
+        torch.manual_seed(37)
+        reference = TestGlmDSparkMLA()
+        q, _, table, starts, lengths = reference.inputs([63, 8200], [8, 8])
+        pages = int(table.max()) + 1
+        stride = ((3052800 + 655) // 656) * 656
+        backing = torch.zeros(pages * stride, device="cuda", dtype=torch.uint8)
+        cache = backing.as_strided((pages, 64, 656), (stride, 656, 1))
+        latent = torch.randn(pages * 64, 512, device="cuda", dtype=q.dtype)
+        rope = torch.randn(pages * 64, 64, device="cuda", dtype=q.dtype)
+        slots = torch.arange(pages * 64, device="cuda", dtype=torch.int64)
+        scale = torch.tensor(0.5, device="cuda", dtype=torch.float32)
+        dspark_flashmla.store(latent, rope, cache, slots, scale)
+        original = torch.cat([latent, rope], -1).float().div(scale)
+        original = original.clamp(-448, 448).to(torch.float8_e4m3fn)
+        restored_latent = cache[..., :512].contiguous().view(torch.float8_e4m3fn)
+        torch.testing.assert_close(
+            restored_latent.view(torch.uint8),
+            original[:, :512].contiguous().view(torch.uint8).view_as(restored_latent),
+            rtol=0,
+            atol=0,
+        )
+        restored_rope = cache[..., 528:].contiguous().view(torch.bfloat16)
+        expected = (original.float() * scale).view(pages, 64, 576)
+        torch.testing.assert_close(restored_rope, expected[..., 512:].to(q.dtype))
+        before = cache[0, 0].clone()
+        dspark_flashmla.store(latent[:1], rope[:1], cache, slots[:1] - 1, scale)
+        torch.testing.assert_close(cache[0, 0], before, rtol=0, atol=0)
+
+        def forward():
+            return dspark_flashmla.attention(
+                q, cache, table, starts, lengths, True, 8192, kv_scale=scale
+            )
+
+        forward()
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            actual = forward()
+        for live_lengths in ([63, 8200], [64, 8199]):
+            lengths.copy_(torch.tensor(live_lengths, device="cuda", dtype=torch.int32))
+            graph.replay()
+            dense = reference.dense(
+                (q, expected, table, starts, lengths), live_lengths, [8, 8], 8192
+            )
+            relative = (actual.float() - dense.float()).norm() / dense.float().norm()
+            self.assertLess(float(relative), 0.01)
+        starts.copy_(torch.tensor([0, 8, 8], device="cuda", dtype=torch.int32))
+        lengths[1] = 0
+        graph.replay()
+        self.assertTrue(bool(actual.isfinite().all()))
+        torch.testing.assert_close(actual[8:], torch.zeros_like(actual[8:]))
 
 
 if __name__ == "__main__":

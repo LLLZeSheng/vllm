@@ -7,6 +7,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+import vllm.envs as envs
 from vllm.config import get_current_vllm_config
 from vllm.distributed import get_tensor_model_parallel_world_size
 from vllm.logger import init_logger
@@ -136,6 +137,8 @@ class DSparkContextKVModel(DFlashQwen3Model):
 
     def _build_fused_kv_buffers(self):
         if self.is_mla:
+            if not envs.VLLM_GLM_DSPARK_MLA_CONTEXT_KV_FUSION:
+                return
             self.register_buffer(
                 "_fused_mla_context_kv_weight",
                 torch.cat(
@@ -218,6 +221,15 @@ class DSparkContextKVModel(DFlashQwen3Model):
         context_states = rms(
             context_states, self.hidden_norm.weight, self.config.rms_norm_eps
         )
+        if not envs.VLLM_GLM_DSPARK_MLA_CONTEXT_KV_FUSION:
+            for i, layer in enumerate(self.layers):
+                slots = (
+                    context_slot_mapping[i]
+                    if isinstance(context_slot_mapping, (list, tuple))
+                    else context_slot_mapping
+                )
+                layer.self_attn.store(context_states, context_positions, slots)
+            return
         if not hasattr(self, "_fused_mla_context_kv_weight"):
             self._build_fused_kv_buffers()
         projected = F.linear(context_states, self._fused_mla_context_kv_weight).view(

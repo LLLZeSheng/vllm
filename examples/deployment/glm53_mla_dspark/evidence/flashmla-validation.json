@@ -1,0 +1,107 @@
+{
+  "passed": true,
+  "rows": [
+    {
+      "dataset": "0831",
+      "requests_per_backend": 100,
+      "triton_acceptance": 3.7729297786578035,
+      "flashmla_acceptance": 3.94555614286793,
+      "triton_tpot_request_mean_ms": 7.352870413202009,
+      "flashmla_tpot_request_mean_ms": 6.094245801759454,
+      "request_mean_tpot_reduction_pct": 17.117459450702487,
+      "triton_tpot_token_weighted_ms": 8.178053454728774,
+      "flashmla_tpot_token_weighted_ms": 6.72822279429976,
+      "token_weighted_tpot_reduction_pct": 17.72830990228711,
+      "flashmla_tpot_aligned_to_triton_acceptance_ms": 7.036065427668052,
+      "triton_ttft_mean_s": 5.453814096700823,
+      "flashmla_ttft_mean_s": 6.011615120420174,
+      "triton_output_tokens": 53203,
+      "flashmla_output_tokens": 52110,
+      "server_triton": {
+        "request_mean_ms": 7.411491783739283,
+        "token_weighted_ms": 8.228919246067248,
+        "preemptions": 0.0
+      },
+      "server_flashmla": {
+        "request_mean_ms": 6.212361241362521,
+        "token_weighted_ms": 6.777402089706016,
+        "preemptions": 0.0
+      }
+    },
+    {
+      "dataset": "pct80",
+      "requests_per_backend": 100,
+      "triton_acceptance": 2.696058394160584,
+      "flashmla_acceptance": 2.7067137809187276,
+      "triton_tpot_request_mean_ms": 8.519734706808187,
+      "flashmla_tpot_request_mean_ms": 8.049237211277225,
+      "request_mean_tpot_reduction_pct": 5.522443030473512,
+      "triton_tpot_token_weighted_ms": 8.752851862777403,
+      "flashmla_tpot_token_weighted_ms": 8.314088581509157,
+      "token_weighted_tpot_reduction_pct": 5.0128036912648,
+      "flashmla_tpot_aligned_to_triton_acceptance_ms": 8.346947598795031,
+      "triton_ttft_mean_s": 15.487109270730288,
+      "flashmla_ttft_mean_s": 13.297878134124913,
+      "triton_output_tokens": 27579,
+      "flashmla_output_tokens": 25907,
+      "server_triton": {
+        "request_mean_ms": 9.031847467867504,
+        "token_weighted_ms": 8.981685036758748,
+        "preemptions": 0.0
+      },
+      "server_flashmla": {
+        "request_mean_ms": 8.57803274301462,
+        "token_weighted_ms": 8.539181721044923,
+        "preemptions": 0.0
+      }
+    },
+    {
+      "dataset": "workload",
+      "requests_per_backend": 100,
+      "triton_acceptance": 2.8655607571748423,
+      "flashmla_acceptance": 2.960508701472557,
+      "triton_tpot_request_mean_ms": 5.809131736587354,
+      "flashmla_tpot_request_mean_ms": 5.469495934310929,
+      "request_mean_tpot_reduction_pct": 5.846584613279015,
+      "triton_tpot_token_weighted_ms": 8.498272869021388,
+      "flashmla_tpot_token_weighted_ms": 7.970934022605382,
+      "token_weighted_tpot_reduction_pct": 6.205247284284143,
+      "flashmla_tpot_aligned_to_triton_acceptance_ms": 8.235044213842524,
+      "triton_ttft_mean_s": 12.6731680263218,
+      "flashmla_ttft_mean_s": 13.32962410704582,
+      "triton_output_tokens": 28054,
+      "flashmla_output_tokens": 30853,
+      "server_triton": {
+        "request_mean_ms": 6.8949537065465405,
+        "token_weighted_ms": 8.757527135132982,
+        "preemptions": 0.0
+      },
+      "server_flashmla": {
+        "request_mean_ms": 6.490576332622795,
+        "token_weighted_ms": 8.197224480904923,
+        "preemptions": 0.0
+      }
+    }
+  ],
+  "model": "glm53-lzs",
+  "head_padding": false,
+  "context_projection_fusion": false,
+  "cache_record_bytes": 656,
+  "previous_cache_record_bytes": 576,
+  "cache_note": "512 E4M3 latent bytes +16 scale bytes +128 BF16 RoPE bytes; RoPE is rounded to original E4M3 values before storage",
+  "swa_allocation_audit": {
+    "p0": {
+      "disable_hybrid_kv_cache_manager": false,
+      "hybrid_manager_enabled": true
+    },
+    "p1": {
+      "disable_hybrid_kv_cache_manager": false,
+      "hybrid_manager_enabled": true
+    },
+    "d": {
+      "disable_hybrid_kv_cache_manager": false,
+      "hybrid_manager_enabled": true
+    }
+  },
+  "methodology": "Same step1207 weights; fixed100 per domain; concurrency8; output cap1024; same requests and seeds; separate process launches; acceptance includes base token. Sampling produces different outputs; one valid run/backend/domain."
+}
