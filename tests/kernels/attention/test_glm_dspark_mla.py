@@ -150,6 +150,33 @@ class TestGlmDSparkMLAContextProjection(unittest.TestCase):
                         self.assertIs(written_slots, slots[i])
 
 
+class TestGlmDSparkMLAReuseScope(unittest.TestCase):
+    def test_reuse_isolated_across_nested_calls_and_exceptions(self):
+        from vllm.v1.attention.ops.glm_dspark_mla import REUSE, forward_scope
+
+        @forward_scope
+        def nested(fail=False):
+            self.assertEqual(REUSE.get(), {})
+            REUSE.get()["visited"] = True
+            if fail:
+                raise RuntimeError("abort forward")
+
+        @forward_scope
+        def outer():
+            reuse = REUSE.get()
+            reuse["outer"] = True
+            nested()
+            self.assertIs(REUSE.get(), reuse)
+            with self.assertRaisesRegex(RuntimeError, "abort forward"):
+                nested(fail=True)
+            self.assertEqual(REUSE.get(), {"outer": True})
+
+        with patch.object(envs, "VLLM_GLM_DSPARK_MLA_OPTIMIZATIONS", "planner"):
+            outer()
+            outer()
+        self.assertIsNone(REUSE.get())
+
+
 @unittest.skipUnless(current_platform.is_cuda(), "CUDA is required")
 class TestGlmDSparkMLA(unittest.TestCase):
     def setUp(self):
@@ -375,6 +402,101 @@ class TestGlmDSparkMLA(unittest.TestCase):
 
 @unittest.skipUnless(current_platform.is_cuda(), "CUDA is required")
 class TestGlmDSparkFlashMLA(unittest.TestCase):
+    def test_fused_rope_preserves_finite_bf16_patterns_including_subnormals(self):
+        from vllm.model_executor.models.glm_dspark_mla import GlmDSparkMLAAttention
+        from vllm.v1.attention.backends.mla import dspark_flashmla
+        from vllm.v1.attention.ops import glm_dspark_mla as ops
+
+        if not current_platform.has_device_capability(90):
+            self.skipTest("Packed FP8 cache requires a FlashMLA-capable GPU")
+        bits = torch.arange(65536, dtype=torch.int32, device="cuda").to(torch.int16)
+        values = bits.view(torch.bfloat16)
+        values = torch.where(values.isfinite(), values, 0)
+        torch.manual_seed(48)
+        positions = torch.randint(0, 1048576, (1024,), device="cuda")
+        for neox in (False, True):
+            layer = SimpleNamespace(rope_theta=8000000, is_neox_style=neox)
+            for _ in range(4):
+                x = values[torch.randperm(len(values), device="cuda")].view(1024, 1, 64)
+                with patch.object(envs, "VLLM_GLM_DSPARK_MLA_OPTIMIZATIONS", ""):
+                    expected = GlmDSparkMLAAttention.rope(layer, x, positions)
+                with (
+                    patch.object(envs, "VLLM_GLM_DSPARK_MLA_FLASHMLA", True),
+                    patch.object(envs, "VLLM_GLM_DSPARK_MLA_OPTIMIZATIONS", "rope"),
+                ):
+                    actual = ops.rope(layer, x, positions)
+                self.assertTrue(
+                    torch.equal(expected.view(torch.int16), actual.view(torch.int16))
+                )
+                z = torch.randn(1024, 576, dtype=torch.bfloat16, device="cuda")
+                z[:, 512:] = x.squeeze(1)
+                slots = torch.arange(1024, device="cuda")
+                slots[-1] = -1
+                layer.kv_a_layernorm = lambda x: x
+                for scale_value in (0.5, 3.0):
+                    backing = torch.full(
+                        (16, 5, 64, 656), 91, dtype=torch.uint8, device="cuda"
+                    )
+                    cache = backing[:, 2]
+                    scale = torch.tensor(scale_value, device="cuda")
+                    layer.attn = SimpleNamespace(kv_cache=cache, _k_scale=scale)
+                    dspark_flashmla.store(
+                        z[:, :512], expected.squeeze(1), cache, slots, scale
+                    )
+                    expected_bytes = backing.clone()
+                    backing.fill_(91)
+                    ops.store_projected(layer, z, positions, slots)
+                    self.assertTrue(torch.equal(expected_bytes, backing))
+
+    def test_fused_rope_and_store_are_bitwise_equal_with_strides_and_padding(self):
+        from vllm.model_executor.models.glm_dspark_mla import GlmDSparkMLAAttention
+        from vllm.v1.attention.backends.mla import dspark_flashmla
+        from vllm.v1.attention.ops import glm_dspark_mla as ops
+
+        if not current_platform.has_device_capability(90):
+            self.skipTest("Packed FP8 cache requires a FlashMLA-capable GPU")
+        torch.manual_seed(47)
+        positions = torch.tensor(
+            [0, 1, 63, 64, 8191, 8192, 8193, 80000, 1048575], device="cuda"
+        )
+        slots = torch.tensor([0, 1, 63, 64, 70, 127, 128, -1], device="cuda")
+        for neox in (False, True):
+            layer = SimpleNamespace(
+                rope_theta=8000000,
+                is_neox_style=neox,
+                kv_a_layernorm=lambda x: x,
+            )
+            x = torch.randn(9, 64, 256, dtype=torch.bfloat16, device="cuda")[..., 192:]
+            with patch.object(envs, "VLLM_GLM_DSPARK_MLA_OPTIMIZATIONS", ""):
+                expected = GlmDSparkMLAAttention.rope(layer, x, positions)
+            with (
+                patch.object(envs, "VLLM_GLM_DSPARK_MLA_FLASHMLA", True),
+                patch.object(envs, "VLLM_GLM_DSPARK_MLA_OPTIMIZATIONS", "rope"),
+            ):
+                actual = ops.rope(layer, x, positions)
+            self.assertTrue(
+                torch.equal(expected.view(torch.int16), actual.view(torch.int16))
+            )
+            z = torch.randn(9, 5, 576, dtype=torch.bfloat16, device="cuda")[:, 3]
+            with patch.object(envs, "VLLM_GLM_DSPARK_MLA_OPTIMIZATIONS", ""):
+                rotary = GlmDSparkMLAAttention.rope(
+                    layer, z[:, 512:].unsqueeze(1), positions
+                )
+            for scale_value in (0.125, 1.0, 3.0):
+                backing = torch.full(
+                    (4, 5, 64, 656), 91, dtype=torch.uint8, device="cuda"
+                )
+                cache = backing[:, 2]
+                scale = torch.tensor(scale_value, device="cuda")
+                layer.attn = SimpleNamespace(kv_cache=cache, _k_scale=scale)
+                dspark_flashmla.store(
+                    z[:, :512], rotary.squeeze(1), cache, slots, scale
+                )
+                expected_bytes = backing.clone()
+                backing.fill_(91)
+                ops.store_projected(layer, z, positions, slots)
+                self.assertTrue(torch.equal(expected_bytes, backing))
+
     def test_packed_fp8_preserves_values_causal_windows_and_live_graph_rows(self):
         from vllm.v1.attention.backends.mla import dspark_flashmla
         from vllm.v1.attention.ops.flashmla import is_flashmla_sparse_supported
@@ -411,9 +533,19 @@ class TestGlmDSparkFlashMLA(unittest.TestCase):
         dspark_flashmla.store(latent[:1], rope[:1], cache, slots[:1] - 1, scale)
         torch.testing.assert_close(cache[0, 0], before, rtol=0, atol=0)
 
+        from vllm.v1.attention.ops.glm_dspark_mla import forward_scope
+
+        @forward_scope
         def forward():
-            return dspark_flashmla.attention(
+            first = dspark_flashmla.attention(
                 q, cache, table, starts, lengths, True, 8192, kv_scale=scale
+            )
+            # A later layer must safely reuse the first layer's live schedule.
+            return (
+                dspark_flashmla.attention(
+                    q, cache, table, starts, lengths, True, 8192, kv_scale=scale
+                )
+                + first * 0
             )
 
         forward()

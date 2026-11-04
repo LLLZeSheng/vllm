@@ -2,6 +2,8 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Dedicated DSpark KV producer with no query, MLP, or vocabulary weights."""
 
+from typing import cast
+
 import regex as re
 import torch
 from torch import nn
@@ -16,6 +18,7 @@ from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.model_executor.layers.linear import ReplicatedLinear
 from vllm.model_executor.layers.rotary_embedding import get_rope
 from vllm.transformers_utils.config import set_default_rope_theta
+from vllm.v1.attention.ops import glm_dspark_mla as mla_ops
 
 from .qwen3_dflash import (
     DFlashQwen3Model,
@@ -189,7 +192,7 @@ class DSparkContextKVModel(DFlashQwen3Model):
             if match:
                 layer, kind = int(match[1]), match[2]
                 row = (2 * layer + int(kind == "v")) * kv
-                destination = self._fused_kv_weight[row : row + kv]
+                destination = cast(torch.Tensor, self._fused_kv_weight)[row : row + kv]
             else:
                 destination = params[name]
             if destination.shape != tensor.shape:
@@ -209,6 +212,7 @@ class DSparkContextKVModel(DFlashQwen3Model):
         )
         return {"model." + name for name in params}
 
+    @mla_ops.forward_scope
     def precompute_and_store_context_kv(
         self, context_states, context_positions, context_slot_mapping=None
     ):
@@ -278,6 +282,8 @@ class MLAContextKVAttention(nn.Module):
         self.store_projected(z, positions, slots)
 
     def store_projected(self, z, positions, slots):
+        if mla_ops.enabled("store"):
+            return mla_ops.store_projected(self, z, positions, slots)
         latent = self.kv_a_layernorm(z[:, :512])
         rotary = self.rope(z[:, 512:].unsqueeze(1), positions).squeeze(1)
         if slots is not None:

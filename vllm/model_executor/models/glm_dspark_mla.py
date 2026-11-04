@@ -2,6 +2,8 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """GLM DSpark with compressed MLA caches and per-layer block attention."""
 
+from typing import cast
+
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -22,7 +24,9 @@ from vllm.model_executor.models.qwen3_dspark import (
     Qwen3DSparkForCausalLM,
     Qwen3DSparkModel,
 )
+from vllm.v1.attention.backend import CommonAttentionMetadata
 from vllm.v1.attention.backends.mla.dspark import DSparkMLABackend
+from vllm.v1.attention.ops import glm_dspark_mla as mla_ops
 from vllm.v1.kv_cache_interface import MLAAttentionSpec, SlidingWindowMLASpec
 
 if envs.VLLM_GLM_DSPARK_MLA_FLASHMLA:
@@ -167,6 +171,8 @@ class GlmDSparkMLAAttention(nn.Module):
         )
 
     def rope(self, x, positions):
+        if mla_ops.enabled("rope") or mla_ops.enabled("trig"):
+            return mla_ops.rope(self, x, positions)
         inv = self.rope_theta ** (
             -torch.arange(0, 64, 2, device=x.device, dtype=torch.float32) / 64
         )
@@ -187,6 +193,8 @@ class GlmDSparkMLAAttention(nn.Module):
         self.store_projected(z, positions, slots)
 
     def store_projected(self, z, positions, slots):
+        if mla_ops.enabled("store"):
+            return mla_ops.store_projected(self, z, positions, slots)
         latent = self.kv_a_layernorm(z[:, :512])
         rotary = self.rope(z[:, 512:].unsqueeze(1), positions).squeeze(1)
         if slots is not None:
@@ -194,15 +202,19 @@ class GlmDSparkMLAAttention(nn.Module):
 
     def forward(self, positions, hidden_states):
         context = get_forward_context()
-        metadata = context.attn_metadata
-        if metadata is None:
+        all_metadata = context.attn_metadata
+        if all_metadata is None:
             return torch.zeros_like(hidden_states)
-        metadata = (
-            metadata[self.attn.layer_name] if isinstance(metadata, dict) else metadata
+        metadata = cast(
+            CommonAttentionMetadata | None,
+            all_metadata[self.attn.layer_name]
+            if isinstance(all_metadata, dict)
+            else all_metadata,
         )
         if metadata is None:
             return torch.zeros_like(hidden_states)
-        self.store(hidden_states, positions, context.slot_mapping[self.attn.layer_name])
+        slots = cast(dict[str, torch.Tensor], context.slot_mapping)
+        self.store(hidden_states, positions, slots[self.attn.layer_name])
         q = F.linear(
             self.q_a_layernorm(self.q_a_proj(hidden_states)), self.q_b_proj.weight
         )
@@ -265,6 +277,11 @@ class GlmDSparkDecoderLayer(DFlashQwen3DecoderLayer):
 class GlmDSparkMLAModel(Qwen3DSparkModel):
     decoder_layer_cls = GlmDSparkDecoderLayer
 
+    @mla_ops.forward_scope
+    def forward(self, input_ids, positions, input_embeds=None):
+        return super().forward(input_ids, positions, input_embeds)
+
+    @mla_ops.forward_scope
     def precompute_and_store_context_kv(
         self, context_states, context_positions, context_slot_mapping=None
     ):

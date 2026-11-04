@@ -8,10 +8,10 @@ fully-E4M3 model's numerical contract; there is no model/head zero padding.
 """
 
 import torch
-import triton
-import triton.language as tl
 
+from vllm.triton_utils import tl, triton
 from vllm.v1.attention.ops.flashmla import flash_mla_with_kvcache, get_mla_metadata
+from vllm.v1.attention.ops.glm_dspark_mla import REUSE, enabled
 
 
 @triton.jit
@@ -131,25 +131,38 @@ def attention(
         return torch.zeros(padded, 64, 512, device=q.device, dtype=q.dtype)
     # Treat each query as an independent row: its exact visible window is
     # supplied explicitly, including block-internal causality and graph padding.
-    indices = torch.empty(n, 1, window, device=q.device, dtype=torch.int32)
-    active = torch.empty(n, device=q.device, dtype=torch.int32)
-    _indices[(n, triton.cdiv(window, 256))](
-        starts,
-        lengths,
-        table,
-        indices,
-        active,
-        n,
-        lengths.shape[0],
-        table.stride(0),
-        table.shape[1],
-        cache.shape[1],
-        window,
-        256,
-    )
-    # Scheduling depends on live window lengths. A fresh metadata object forces
-    # the planner to run on each invocation and captures it inside CUDA graphs.
-    meta, _ = get_mla_metadata()
+    reuse = REUSE.get()
+    key = (id(table), id(starts), id(lengths), n, window, cache.shape[1])
+    index_key, planner_key = ("indices", key), ("planner", key)
+    if enabled("indices") and reuse is not None and index_key in reuse:
+        indices, active = reuse[index_key]
+    else:
+        indices = torch.empty(n, 1, window, device=q.device, dtype=torch.int32)
+        active = torch.empty(n, device=q.device, dtype=torch.int32)
+        _indices[(n, triton.cdiv(window, 256))](
+            starts,
+            lengths,
+            table,
+            indices,
+            active,
+            n,
+            lengths.shape[0],
+            table.stride(0),
+            table.shape[1],
+            cache.shape[1],
+            window,
+            256,
+        )
+        if enabled("indices") and reuse is not None:
+            reuse[index_key] = indices, active
+    # Equal layers may share a schedule, but the first layer of every forward
+    # must run the live planner, including inside a captured CUDA graph.
+    if enabled("planner") and reuse is not None and planner_key in reuse:
+        meta = reuse[planner_key]
+    else:
+        meta, _ = get_mla_metadata()
+        if enabled("planner") and reuse is not None:
+            reuse[planner_key] = meta
     out, _ = flash_mla_with_kvcache(
         q=q[:n].contiguous().unsqueeze(1),
         k_cache=cache.unsqueeze(2),
