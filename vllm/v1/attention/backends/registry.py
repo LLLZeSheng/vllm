@@ -98,6 +98,9 @@ class AttentionBackendEnum(Enum, metaclass=_AttentionBackendEnumMeta):
     CUTLASS_MLA = "vllm.v1.attention.backends.mla.cutlass_mla.CutlassMLABackend"
     FLASHMLA = "vllm.v1.attention.backends.mla.flashmla.FlashMLABackend"
     FLASHMLA_SWA = "vllm.v1.attention.backends.mla.flashmla_swa.FlashMLASWABackend"
+    DSPARK_SHARED_MLA = (
+        "vllm.v1.attention.backends.mla.dspark_shared.SharedHistoryMLABackend"
+    )
     FLASHMLA_SPARSE = (
         "vllm.v1.attention.backends.mla.flashmla_sparse.FlashMLASparseBackend"
     )

@@ -702,6 +702,14 @@ _SPECULATIVE_DECODING_MODELS = {
         "MiniMaxM3DSparkForCausalLM",
     ),
     "Qwen3DSparkModel": ("qwen3_dspark", "Qwen3DSparkForCausalLM"),
+    "DSparkSharedHistoryMLAForCausalLM": (
+        "dspark_shared_mla",
+        "DSparkSharedHistoryMLAForCausalLM",
+    ),
+    "GlmDSparkSharedHistoryMLAForCausalLM": (
+        "dspark_shared_mla",
+        "DSparkSharedHistoryMLAForCausalLM",
+    ),
     "Qwen3OmniDSparkModel": ("qwen3_dspark", "Qwen3DSparkForCausalLM"),
     # Serving under method="dflash" means EAGLEConfig rewrites the draft
     # architecture to DFlash{arch}, so that is the name the registry is asked

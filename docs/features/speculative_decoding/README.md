@@ -12,6 +12,7 @@ vLLM supports a variety of methods of speculative decoding. Model-based methods 
 - [LiLiCorr](lilicorr.md)
 - [Multi-Token Prediction (MTP)](mtp.md)
 - [Draft Model](draft_model.md)
+- [Shared-History MLA DSpark](shared_history_mla.md)
 - [N-Gram](n_gram.md)
 - [Suffix Decoding](suffix.md)
 - [Hidden State Extraction](extract_hidden_states.md)

@@ -546,6 +546,8 @@ steps:
   - tests/models/deepseek_v32/test_pp_topk.py
   - tests/models/test_deepseek_v4_fi_moe_ep.py
   - tests/models/test_dspark_mla.py
+  - tests/models/test_dspark_shared_history.py
+  - tests/transformers_utils/test_dspark_mla_config.py
   - tests/models/transformers/test_layer_registry.py
   - tests/models/test_cohere2_moe_parallel_block.py
   device: cpu-small
@@ -565,6 +567,8 @@ steps:
       models/deepseek_v32/test_pp_topk.py
       models/test_deepseek_v4_fi_moe_ep.py
       models/test_dspark_mla.py
+      models/test_dspark_shared_history.py
+      transformers_utils/test_dspark_mla_config.py
       models/transformers/test_layer_registry.py
       models/test_dory.py
       models/test_alice_ai.py

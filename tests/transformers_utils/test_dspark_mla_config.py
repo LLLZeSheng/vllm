@@ -151,3 +151,37 @@ def test_dspark_mla_speculative_config_preserves_architecture(tmp_path):
     assert speculative_config.draft_model_config.architectures == ["K3DSparkModel"]
     assert speculative_config.draft_model_config.hf_config.model_type == "k3_dspark"
     assert speculative_config.draft_model_config.use_mla
+
+
+def test_shared_history_resolves_legacy_aux_layers_without_path_conventions(tmp_path):
+    """A legacy shared draft must capture the auxiliary layers its FC was trained on."""
+    target_path, draft_path = tmp_path / "target", tmp_path / "adapter"
+    _write_target_config(target_path)
+    _write_dspark_config(
+        draft_path,
+        model_type="qwen3",
+        architectures=["DSparkSharedHistoryMLAForCausalLM"],
+        shared_history_kv={"encoder_type": "cross_layer_latent_mixture_v1"},
+        aux_hidden_state_layer_ids=[2, 21, 39, 57, 76],
+    )
+    target = ModelConfig(
+        model=str(target_path), tokenizer_mode="skip", max_model_len=32768
+    )
+    spec = SpeculativeConfig(
+        method="dspark",
+        model=str(draft_path),
+        num_speculative_tokens=8,
+        target_model_config=target,
+        target_parallel_config=ParallelConfig(),
+    )
+    assert spec.draft_model_config.architectures == [
+        "DSparkSharedHistoryMLAForCausalLM"
+    ]
+    assert spec.draft_model_config.quantization is None
+    assert spec.draft_model_config.hf_config.eagle_aux_hidden_state_layer_ids == [
+        2,
+        21,
+        39,
+        57,
+        76,
+    ]
