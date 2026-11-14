@@ -52,6 +52,14 @@ class DSparkSpeculatorConfig(DFlashSpeculatorConfig):
     def adapt_draft_model_config(cls, spec: "SpeculativeConfig") -> None:
         draft = spec.draft_model_config
         target = spec.target_model_config
+        if getattr(draft.hf_config, "shared_history_kv", None):
+            auxiliary = getattr(draft.hf_config, "aux_hidden_state_layer_ids", None)
+            if (
+                auxiliary is not None
+                and getattr(draft.hf_config, "eagle_aux_hidden_state_layer_ids", None)
+                is None
+            ):
+                draft.hf_config.eagle_aux_hidden_state_layer_ids = auxiliary
         if draft.speculator_config_class is None:
             # Not a self-contained DSpark draft: DeepSeek-V4(.1) DSpark reuses
             # the target's config, and its weights ship in the target checkpoint.
