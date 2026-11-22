@@ -39,6 +39,9 @@ class DFlashSpeculator(DraftModelSpeculator):
         parallel_config = vllm_config.parallel_config
         speculative_config = vllm_config.speculative_config
         assert speculative_config is not None
+        self.context_kv_only = speculative_config.prefill_context_kv_only
+        if self.context_kv_only and not vllm_config.model_config.enforce_eager:
+            raise ValueError("DSpark PDCO prefill requires eager execution")
         vllm_config = copy.copy(vllm_config)
         vllm_config.parallel_config = replace(
             parallel_config,
@@ -336,6 +339,11 @@ class DFlashSpeculator(DraftModelSpeculator):
             context_states = self._prepare_prefill_context_states(
                 context_states, input_batch
             )
+        if (
+            self.context_kv_only
+            and getattr(self, "gqa_context_cache", None) is not None
+        ):
+            return
         self.model.precompute_and_store_context_kv(
             context_states,
             self.context_positions[start:end],
@@ -404,6 +412,8 @@ class DFlashSpeculator(DraftModelSpeculator):
                 self.hidden_states[:num_target_tokens],
                 self.context_positions[:num_target_tokens],
             )
+            if self.context_kv_only:
+                return self.draft_tokens[:num_reqs].fill_(-1)
             # DFlash processes all speculative tokens in one forward pass,
             # so the real token count is num_query_tokens.
             self._prepare_eplb_forward(num_query_tokens)
@@ -457,6 +467,12 @@ class DFlashSpeculator(DraftModelSpeculator):
                 self.max_model_len,
                 self.sample_from_anchor,
             )
+
+        if self.context_kv_only:
+            self._precompute_context_kv(
+                0, num_target_tokens, dummy_run, input_batch=input_batch
+            )
+            return self.draft_tokens[:num_reqs].fill_(-1)
 
         batch_sync, num_batch_tokens = (
             self._build_uniform_batch_dp_sync(dp_sync, num_reqs, self.num_query_per_req)

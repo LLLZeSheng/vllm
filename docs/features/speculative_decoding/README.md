@@ -259,3 +259,12 @@ parallelism and prefix caching disabled. The producer writes one codec record
 for every prompt position. The consumer restores only the prompt positions
 inside the draft attention window. The native draft cache groups are local to
 each engine, while the codec group participates in transfer.
+
+A calibration fitted after per-token RMS normalization can provide an optional
+scalar Boolean `normalize_input` in the safetensors file. Enable the flag when
+calibration data was normalized before PCA. Rank 640 with group size 128 uses
+650 bytes per prompt token.
+
+Set `prefill_context_kv_only` to `true` on the producer to enable PDCO. The
+producer writes the context records and the consumer generates the speculative
+draft tokens. Keep `num_speculative_tokens` configured for the consumer.

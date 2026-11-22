@@ -429,6 +429,8 @@ class SpeculativeConfig:
     kv_cache_dtype: CacheDType | None = None
     """KV cache dtype for the draft model. When `None`, the draft inherits the
     target model's `--kv-cache-dtype`."""
+    prefill_context_kv_only: bool = False
+    """Run only the DSpark context K/V path on the prefill engine."""
     dspark_gqa_context_codec: str | None = None
     """Path to a safetensors mean/basis for a frozen GQA DSpark context codec.
     Enables FP8 coding of prompt context for local evaluation or NIXL P/D."""
@@ -1807,6 +1809,8 @@ class SpeculativeConfig:
 
     @model_validator(mode="after")
     def _verify_args(self) -> Self:
+        if self.prefill_context_kv_only and self.method != "dspark":
+            raise ValueError("prefill_context_kv_only requires method='dspark'")
         if self.dspark_gqa_context_codec is not None and self.method != "dspark":
             raise ValueError("dspark_gqa_context_codec requires method='dspark'")
         if self.tensor_parallel_size is not None:

@@ -123,11 +123,16 @@ class DSparkSpeculator(DFlashSpeculator):
         target_attn_layer_names: set[str],
     ) -> torch.nn.Module:
         model = load_dspark_model(target_model, self.vllm_config)
-        if self.gqa_context_codec_path is not None:
+        if self.context_kv_only or self.gqa_context_codec_path is not None:
             from vllm.model_executor.models.qwen3_dspark import Qwen3DSparkModel
 
             if type(model.model) is not Qwen3DSparkModel:
-                raise ValueError("Context codec requires the GQA DSpark backbone")
+                raise ValueError(
+                    "PDCO and the context codec require the GQA DSpark backbone"
+                )
+        if self.context_kv_only:
+            self._trim_context_only_weights(model, target_model)
+        if self.gqa_context_codec_path is not None:
             self.gqa_context_codec = GQAContextCodec.from_file(
                 self.gqa_context_codec_path,
                 hidden_size=model.model.config.hidden_size,
@@ -175,6 +180,23 @@ class DSparkSpeculator(DFlashSpeculator):
             # is available.
             self.use_acceptance_estimator = False
         return model
+
+    def _trim_context_only_weights(self, draft, target):
+        model = draft.model
+        if model._fused_kv_weight is None:
+            raise ValueError("GQA PDCO requires a fused context KV projection")
+        preserved = {id(param) for param in target.parameters()}
+        preserved.update(id(param) for param in model.hidden_norm.parameters())
+        if model.use_aux_hidden_state:
+            preserved.update(id(param) for param in model.fc.parameters())
+        removed = 0
+        for param in draft.parameters():
+            if id(param) not in preserved:
+                removed += param.nbytes
+                param.data = param.data.new_empty(0)
+        logger.info(
+            "DSpark PDCO prefill context only. Released %d draft weight bytes.", removed
+        )
 
     def _prepare_prefill_context_states(
         self, states: torch.Tensor, input_batch: InputBatch
