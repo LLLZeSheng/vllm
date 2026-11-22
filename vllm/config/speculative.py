@@ -429,6 +429,9 @@ class SpeculativeConfig:
     kv_cache_dtype: CacheDType | None = None
     """KV cache dtype for the draft model. When `None`, the draft inherits the
     target model's `--kv-cache-dtype`."""
+    dspark_gqa_context_codec: str | None = None
+    """Path to a safetensors mean/basis for a frozen GQA DSpark context codec.
+    Enables FP8 coding of prompt context for local evaluation or NIXL P/D."""
     max_model_len: int | None = Field(default=None, ge=1)
     """The maximum model length of the draft model. Used when testing the
     ability to skip speculation for some sequences."""
@@ -1804,6 +1807,8 @@ class SpeculativeConfig:
 
     @model_validator(mode="after")
     def _verify_args(self) -> Self:
+        if self.dspark_gqa_context_codec is not None and self.method != "dspark":
+            raise ValueError("dspark_gqa_context_codec requires method='dspark'")
         if self.tensor_parallel_size is not None:
             raise ValueError(
                 "'tensor_parallel_size' is not a valid argument in the "

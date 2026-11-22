@@ -743,6 +743,13 @@ class HiddenStateCacheSpec(MLAAttentionSpec):
 
 
 @dataclass(frozen=True, kw_only=True)
+class DSparkGQAContextCacheSpec(HiddenStateCacheSpec):
+    """One transferable codec record per position, with local K/V replicas."""
+
+    restored_layers: tuple[str, ...]
+
+
+@dataclass(frozen=True, kw_only=True)
 class RSWASpec(FullAttentionSpec):
     """KV cache spec for Reference Sliding Window Attention (R-SWA).
 

@@ -23,16 +23,24 @@ CUDA graphs (FULL, mirroring DFlash) cover the whole draft step: the parallel
 backbone forward AND the sequential Markov sampling.
 """
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 
 from vllm.config import VllmConfig
 from vllm.config.compilation import CUDAGraphMode
 from vllm.logger import init_logger
+from vllm.v1.worker.gpu.input_batch import InputBatch
 from vllm.v1.worker.gpu.sample.gumbel import gumbel_sample
 from vllm.v1.worker.gpu.spec_decode.dflash.speculator import DFlashSpeculator
+from vllm.v1.worker.gpu.spec_decode.dspark.gqa_context_codec import (
+    GQAContextCodec,
+    prefill_spans,
+)
 from vllm.v1.worker.gpu.spec_decode.dspark.utils import load_dspark_model
+
+if TYPE_CHECKING:
+    from vllm.v1.worker.gpu.spec_decode.dspark.gqa_context_cache import GQAContextCache
 
 logger = init_logger(__name__)
 
@@ -42,6 +50,34 @@ class DSparkSpeculator(DFlashSpeculator):
 
     def __init__(self, vllm_config: VllmConfig, device: torch.device):
         super().__init__(vllm_config, device)
+
+        self.gqa_context_codec: GQAContextCodec | None = None
+        spec_config = vllm_config.speculative_config
+        assert spec_config is not None
+        self.gqa_context_codec_path = spec_config.dspark_gqa_context_codec
+        self.gqa_context_cache: GQAContextCache | None = None
+        self._gqa_wire_group: int | None = None
+        self._gqa_native_groups: list[int] = []
+        if self.gqa_context_codec_path is not None:
+            if not vllm_config.model_config.enforce_eager:
+                raise ValueError("DSpark GQA context codec requires --enforce-eager")
+            transfer = vllm_config.kv_transfer_config
+            if transfer is not None:
+                parallel = vllm_config.parallel_config
+                if (
+                    transfer.kv_connector != "NixlConnector"
+                    or transfer.kv_role not in ("kv_producer", "kv_consumer")
+                    or vllm_config.cache_config.enable_prefix_caching
+                    or parallel.pipeline_parallel_size != 1
+                    or parallel.prefill_context_parallel_size != 1
+                    or parallel.decode_context_parallel_size != 1
+                    or vllm_config.scheduler_config.disable_hybrid_kv_cache_manager
+                ):
+                    raise ValueError(
+                        "GQA DSpark codec transfer requires NixlConnector, a single "
+                        "producer or consumer role, hybrid KV allocation, and "
+                        "prefix caching, PP and context parallelism disabled"
+                    )
 
         # Whether to sample from the anchor position. When True, uses anchor-as-first
         # (N slots, each position predicts the next token). When False, uses 1+N
@@ -87,6 +123,33 @@ class DSparkSpeculator(DFlashSpeculator):
         target_attn_layer_names: set[str],
     ) -> torch.nn.Module:
         model = load_dspark_model(target_model, self.vllm_config)
+        if self.gqa_context_codec_path is not None:
+            from vllm.model_executor.models.qwen3_dspark import Qwen3DSparkModel
+
+            if type(model.model) is not Qwen3DSparkModel:
+                raise ValueError("Context codec requires the GQA DSpark backbone")
+            self.gqa_context_codec = GQAContextCodec.from_file(
+                self.gqa_context_codec_path,
+                hidden_size=model.model.config.hidden_size,
+                device=self.device,
+            )
+            if self.vllm_config.kv_transfer_config is not None:
+                from vllm.v1.worker.gpu.spec_decode.dspark.gqa_context_cache import (
+                    GQAContextCache,
+                )
+
+                layers = [layer.self_attn for layer in model.model.layers]
+                windows = {layer.sliding_window for layer in layers}
+                if len(windows) != 1 or None in windows:
+                    raise ValueError("Codec transfer requires one common SWA window")
+                window = windows.pop()
+                assert window is not None
+                self.gqa_context_cache = GQAContextCache(
+                    self.vllm_config,
+                    self.gqa_context_codec,
+                    tuple(layer.attn.layer_name for layer in layers),
+                    window,
+                )
         # Reduced draft vocab: probabilistic rejection sampling indexes draft
         # logits by target id, so precompute the draft->target column map and a
         # scratch buffer to scatter logits into target vocab before sampling.
@@ -112,6 +175,47 @@ class DSparkSpeculator(DFlashSpeculator):
             # is available.
             self.use_acceptance_estimator = False
         return model
+
+    def _prepare_prefill_context_states(
+        self, states: torch.Tensor, input_batch: InputBatch
+    ) -> torch.Tensor:
+        codec = self.gqa_context_codec
+        if codec is None or not input_batch.has_prefill:
+            return states
+        spans = prefill_spans(
+            input_batch.query_start_loc_np,
+            input_batch.prefill_len_np - input_batch.num_computed_prefill_tokens_np,
+            input_batch.is_prefilling_np,
+        )
+        cache = self.gqa_context_cache
+        if cache is None:
+            return codec.round_trip_prefill(states, spans)
+
+        if self._gqa_wire_group is None:
+            group_ids = {
+                layer: gid
+                for gid, group in enumerate(self.kv_cache_config.kv_cache_groups)
+                for layer in group.layer_names
+            }
+            self._gqa_wire_group = group_ids[cache.layer_name]
+            self._gqa_native_groups = [
+                group_ids[name] for name in cache.restored_layers
+            ]
+
+        transfer = self.vllm_config.kv_transfer_config
+        assert transfer is not None
+        if transfer.is_kv_producer:
+            row = self.draft_kv_cache_group_ids.index(self._gqa_wire_group)
+            cache.store(states, self._context_slot_mappings[row], spans)
+        else:
+            cache.restore(
+                self.model,
+                input_batch,
+                self.block_tables,
+                self._gqa_wire_group,
+                self._gqa_native_groups,
+            )
+        return states
 
     def _sample_logits(
         self,

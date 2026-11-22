@@ -234,3 +234,28 @@ For mitigation strategies, please refer to the FAQ entry *Can the output of a pr
 - [What is Lookahead Scheduling in vLLM?](https://docs.google.com/document/d/1Z9TvqzzBPnh5WHcRwjvK2UEeFeq5zMZb5mFE8jR0HCs/edit#heading=h.1fjfb0donq5a)
 - [Information on batch expansion](https://docs.google.com/document/d/1T-JaS2T1NRfdP51qzqpyakoCXxSXTtORppiwaj5asxA/edit#heading=h.kk7dq05lc6q8)
 - [Dynamic speculative decoding](https://github.com/vllm-project/vllm/issues/4565)
+
+### FP8 context codec for GQA DSpark
+
+Set `dspark_gqa_context_codec` in `--speculative-config` to a local safetensors
+file with a floating-point `mean` of shape `[hidden_size]` and a PCA `basis` of
+shape `[hidden_size, rank]`. Set `method` to `dspark` and use the V2 model runner
+with `--enforce-eager`. Calibrate the basis on the combined draft context states,
+independently of the requests used to evaluate acceptance.
+
+The option runs the prompt rows through the codec before the native GQA
+K/V projections, key normalization and RoPE. Each row contains `rank` FP8 bytes
+plus one FP16 scale for every 128 components. The 512-component format uses
+520 bytes per token. Generated context rows keep the native path. Omit the
+option to run a baseline with the same draft checkpoint and sampling parameters.
+
+A single serving engine uses the codec as a local round trip and retains its
+native cache allocation. This mode measures the acceptance impact directly.
+
+For disaggregated serving, set the same codec file on a NIXL producer and
+consumer. This mode uses the `BLHNC` cache layout, hybrid KV cache allocation
+and a common sliding window across the draft layers. Use PP=1 with context
+parallelism and prefix caching disabled. The producer writes one codec record
+for every prompt position. The consumer restores only the prompt positions
+inside the draft attention window. The native draft cache groups are local to
+each engine, while the codec group participates in transfer.

@@ -310,8 +310,17 @@ class DFlashSpeculator(DraftModelSpeculator):
         # Context rows a captured draft step stores: one full verify per request.
         return min(num_reqs * (self.num_speculative_steps + 1), self.max_num_tokens)
 
+    def _prepare_prefill_context_states(
+        self, states: torch.Tensor, input_batch: InputBatch
+    ) -> torch.Tensor:
+        return states
+
     def _precompute_context_kv(
-        self, start: int, end: int, dummy_run: bool = False
+        self,
+        start: int,
+        end: int,
+        dummy_run: bool = False,
+        input_batch: InputBatch | None = None,
     ) -> None:
         if dummy_run:
             context_slots: torch.Tensor | list[torch.Tensor | None] | None = None
@@ -322,8 +331,13 @@ class DFlashSpeculator(DraftModelSpeculator):
             ]
         else:
             context_slots = self._context_slot_mappings[0][start:end]
+        context_states = self.hidden_states[start:end]
+        if input_batch is not None and not dummy_run:
+            context_states = self._prepare_prefill_context_states(
+                context_states, input_batch
+            )
         self.model.precompute_and_store_context_kv(
-            self.hidden_states[start:end],
+            context_states,
             self.context_positions[start:end],
             context_slots,
         )
@@ -481,7 +495,9 @@ class DFlashSpeculator(DraftModelSpeculator):
                 # Prefill context beyond the graph's rows is stored before replay.
                 self._precompute_context_kv(num_context, num_target_tokens)
         else:
-            self._precompute_context_kv(0, num_target_tokens, dummy_run)
+            self._precompute_context_kv(
+                0, num_target_tokens, dummy_run, input_batch=input_batch
+            )
 
         # Rebuild the draft attention metadata even when replaying the FULL
         # graph so that any attention metadata builder state is updated.

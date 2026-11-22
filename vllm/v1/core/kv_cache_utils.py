@@ -29,6 +29,7 @@ from vllm.v1.kv_cache_interface import (
     AttentionSpec,
     ChunkedLocalAttentionSpec,
     CircularBufferSpec,
+    DSparkGQAContextCacheSpec,
     FullAttentionSpec,
     HiddenStateCacheSpec,
     HiSparseHotSpec,
@@ -2311,6 +2312,33 @@ def get_kv_cache_groups(
         The generated KVCacheGroups
 
     """
+    codecs = [
+        (name, spec)
+        for name, spec in kv_cache_spec.items()
+        if isinstance(spec, DSparkGQAContextCacheSpec)
+    ]
+    if codecs:
+        [(wire_name, wire)] = codecs
+        native = {name: kv_cache_spec[name] for name in wire.restored_layers}
+        target = {
+            name: spec
+            for name, spec in kv_cache_spec.items()
+            if name not in native and name != wire_name
+        }
+        layout = vllm_config.cache_config.get_resolved_kv_cache_layout()
+        if not layout.is_block_outermost:
+            raise ValueError("DSpark GQA codec transfer requires BLHNC cache layout")
+        target_groups = get_kv_cache_groups(vllm_config, target)
+        native_groups = get_kv_cache_groups(vllm_config, native)
+        for group in native_groups:
+            group.enable_kv_transfer = False
+        wire_spec = replace_as(wire, HiddenStateCacheSpec, drop={"restored_layers"})
+        return [
+            *target_groups,
+            *native_groups,
+            KVCacheGroupSpec([wire_name], wire_spec),
+        ]
+
     if vllm_config.scheduler_config.disable_hybrid_kv_cache_manager:
         unify_hybrid_kv_cache_specs(kv_cache_spec)
 
