@@ -149,3 +149,20 @@ def test_restore_uses_real_prompt_end_and_clears_recycled_pages(monkeypatch):
     cache.restore(draft, batch, tables, wire_gid=0, native_gids=[1])
     assert cache.restored_rows == 6
     assert not cache.restore_ends
+
+
+def test_codec_loads_rms_normalized_basis(tmp_path):
+    path = str(tmp_path / "codec.safetensors")
+    save_file(
+        {
+            "mean": torch.zeros(256),
+            "basis": torch.eye(256)[:, :128].contiguous(),
+            "normalize_input": torch.tensor(True),
+        },
+        path,
+    )
+    codec = GQAContextCodec.from_file(path, hidden_size=256, device=torch.device("cpu"))
+    unit = torch.ones((1, 256), dtype=torch.bfloat16)
+    torch.testing.assert_close(
+        codec.encode(unit), codec.encode(unit * 8), atol=0, rtol=0
+    )

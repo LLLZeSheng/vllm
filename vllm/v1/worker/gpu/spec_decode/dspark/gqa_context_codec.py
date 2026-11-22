@@ -17,7 +17,9 @@ _MIN_SCALE = torch.finfo(_SCALE_DTYPE).smallest_normal
 class GQAContextCodec(nn.Module):
     """Encode one context vector and restore the input to the native K/V path."""
 
-    def __init__(self, mean: torch.Tensor, basis: torch.Tensor):
+    def __init__(
+        self, mean: torch.Tensor, basis: torch.Tensor, normalize_input: bool = False
+    ):
         super().__init__()
         if (
             mean.ndim != 1
@@ -31,6 +33,7 @@ class GQAContextCodec(nn.Module):
         self.register_buffer(
             "basis", basis.to(torch.bfloat16).contiguous(), persistent=False
         )
+        self.normalize_input = normalize_input
         self.rank = basis.shape[1]
         self.groups = self.rank // _GROUP_SIZE
         self.record_bytes = self.rank + self.groups * 2
@@ -51,7 +54,13 @@ class GQAContextCodec(nn.Module):
             or not torch.isfinite(basis).all()
         ):
             raise ValueError("Invalid GQA context codec calibration")
-        return cls(mean, basis).to(device)
+        normalized = tensors.get("normalize_input")
+        normalize_input = False
+        if normalized is not None:
+            if normalized.ndim != 0 or normalized.dtype != torch.bool:
+                raise ValueError("Invalid GQA codec input normalization flag")
+            normalize_input = bool(normalized)
+        return cls(mean, basis, normalize_input).to(device)
 
     def round_trip_prefill(
         self, states: torch.Tensor, spans: list[tuple[int, int]]
@@ -71,7 +80,12 @@ class GQAContextCodec(nn.Module):
         return with_restored_prefill
 
     def encode(self, context: torch.Tensor) -> torch.Tensor:
-        centered = (context.float() - self.mean).to(self.basis.dtype)
+        values = context.float()
+        if self.normalize_input:
+            values = values * torch.rsqrt(
+                values.square().mean(dim=-1, keepdim=True) + 1e-6
+            )
+        centered = (values - self.mean).to(self.basis.dtype)
         latent = (centered @ self.basis).float().view(-1, self.groups, _GROUP_SIZE)
         scales = (
             (latent.abs().amax(-1) / _FP8_MAX)
