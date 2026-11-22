@@ -152,6 +152,7 @@ from vllm.v1.worker.gpu.spec_decode.adaptive_verification import (
     maybe_create_adaptive_verification_manager,
     resolve_adaptive_cudagraph_mode,
 )
+from vllm.v1.worker.gpu.spec_decode.dspark.speculator import DSparkSpeculator
 from vllm.v1.worker.gpu.spec_decode.eagle.eagle3_utils import (
     set_eagle3_aux_hidden_state_layers,
     verify_supports_aux_hidden_states_over_pp,
@@ -269,6 +270,11 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         self.speculator = None
         self.use_aux_hidden_state_outputs = False
         self.num_speculative_steps = vllm_config.num_speculative_tokens
+        if (
+            self.speculative_config is not None
+            and self.speculative_config.prefill_context_kv_only
+        ):
+            self.num_speculative_steps = 0
         if self.speculative_config is not None:
             if self.is_last_pp_rank:
                 self.speculator = init_speculator(self.vllm_config, self.device)
@@ -1095,6 +1101,10 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         # Call model_state.remove_request *before* req_states.remove_request
         # so the model_state can still look up the slot index.
         self.model_state.remove_request(req_id)
+        if isinstance(self.speculator, DSparkSpeculator):
+            cache = self.speculator.gqa_context_cache
+            if cache is not None:
+                cache.restore_ends.pop(req_id, None)
         req_idx = self.req_states.remove_request(req_id)
         if req_idx is None:
             return False
@@ -1150,6 +1160,17 @@ class GPUModelRunner(LoRAModelRunnerMixin):
 
             prompt_len = new_req_data.prompt_len
             sampling_params = new_req_data.sampling_params
+            if isinstance(self.speculator, DSparkSpeculator):
+                cache = self.speculator.gqa_context_cache
+                transfer = self.vllm_config.kv_transfer_config
+                if (
+                    cache is not None
+                    and transfer is not None
+                    and transfer.is_kv_consumer
+                ):
+                    loaded = min(prompt_len, new_req_data.num_computed_tokens)
+                    if loaded:
+                        cache.restore_ends[req_id] = loaded
             self.req_states.add_request(
                 req_id=req_id,
                 prompt_len=prompt_len,
@@ -2216,7 +2237,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                     dp_sync=dp_sync,
                     mm_inputs=mm_inputs,
                 )
-            self.req_states.draft_tokens[input_batch.idx_mapping] = draft_tokens
+            if self.num_speculative_steps:
+                self.req_states.draft_tokens[input_batch.idx_mapping] = draft_tokens
             if self.adaptive_verification is not None:
                 self.adaptive_verification.record_confidences(
                     self.speculator.draft_token_confidence_probs, input_batch

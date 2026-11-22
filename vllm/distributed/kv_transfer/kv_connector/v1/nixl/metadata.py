@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Metadata dataclasses and helpers for the NIXL connector."""
 
+import hashlib
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -126,7 +127,7 @@ def _get_speculative_compatibility_factors(
     # only sees the raw override here (usually None = auto-select), never the
     # resolved backend, so hashing it would cause false mismatches without
     # catching anything the runtime layout check misses.
-    return {
+    factors = {
         "method": speculative_config.method,
         "model": draft_model_config.model,
         "revision": draft_model_config.revision,
@@ -137,6 +138,13 @@ def _get_speculative_compatibility_factors(
             tuple(auxiliary_layer_ids) if auxiliary_layer_ids is not None else None
         ),
     }
+
+    if codec_path := speculative_config.dspark_gqa_context_codec:
+        with open(codec_path, "rb") as codec:
+            factors["dspark_gqa_codec_fp8_g128_v1"] = hashlib.file_digest(
+                codec, "sha256"
+            ).hexdigest()
+    return factors
 
 
 def compute_nixl_compatibility_hash(
