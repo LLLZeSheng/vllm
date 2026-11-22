@@ -54,7 +54,11 @@ class GQAContextCache(AttentionLayerBase):
         self.codec = codec
         self.restored_layers = restored_layers
         self.window = window
+        assert config.speculative_config is not None
+        self.native_context_lookahead = config.speculative_config.num_speculative_tokens
         self.restore_ends: dict[str, int] = {}
+        self.encoded_rows = 0
+        self.restored_rows = 0
         registry = config.compilation_config.static_forward_context
         if self.layer_name in registry:
             raise ValueError("Duplicate GQA DSpark context cache")
@@ -93,6 +97,7 @@ class GQAContextCache(AttentionLayerBase):
         for start, end in spans:
             wire = self.codec.encode(states[start:end])
             basic_cache(wire.unsqueeze(1), self.kv_cache, slots[start:end])
+            self.encoded_rows += end - start
 
     def restore(
         self,
@@ -113,7 +118,11 @@ class GQAContextCache(AttentionLayerBase):
             if computed + scheduled < input_batch.prefill_len_np[row]:
                 continue
             self.restore_ends.pop(req_id)
-            anchor = computed + scheduled
+            # A fully imported prompt may schedule the last prompt token
+            # together with K padded speculative slots. Those slots are
+            # rejected before DFlash computes the first usable draft anchor.
+            # Do not move the left edge of the restored window past prompt_len.
+            anchor = min(computed + scheduled, int(input_batch.prefill_len_np[row]))
             begin = max(0, min(computed, anchor - self.window + 1))
             if begin >= end:
                 continue
@@ -130,7 +139,8 @@ class GQAContextCache(AttentionLayerBase):
                 wire, dtype=draft.model.hidden_norm.weight.dtype
             )
             native_slots = []
-            for gid in native_gids:
+            native_attentions = draft.model._attn_layers
+            for layer, gid in zip(native_attentions, native_gids, strict=True):
                 bs = block_tables.kernel_block_sizes[gid]
                 blocks = block_tables.input_block_tables[gid][
                     row, positions // bs
@@ -138,4 +148,17 @@ class GQAContextCache(AttentionLayerBase):
                 native_slots.append(
                     torch.where(blocks > 0, blocks * bs + positions % bs, -1)
                 )
+                # Native draft blocks are locally allocated. Packed target,
+                # codec and draft groups can reuse backing bytes of different
+                # formats. Reset the active pages before partial-window restore.
+                limit = min(
+                    block_tables.input_block_tables[gid].shape[1],
+                    (anchor + self.native_context_lookahead + bs - 1) // bs,
+                )
+                page_ids = block_tables.input_block_tables[gid][
+                    row, begin // bs : limit
+                ].long()
+                page_ids = page_ids[page_ids > 0]
+                layer.kv_cache.view(torch.uint8).index_fill_(0, page_ids, 0)
             draft.precompute_and_store_context_kv(restored, positions, native_slots)
+            self.restored_rows += end - begin

@@ -1601,6 +1601,20 @@ class KVCacheConfig:
         Required for Mamba layers, whose state is read before it is fully written
         (#35219), and for mixed-precision caches, where a block reused across
         groups can be reinterpreted under a different precision and decode stale
-        bytes to NaN/Inf. Uniform-precision caches skip zeroing.
+        bytes to NaN/Inf. Locally restored FP8 sliding-window groups also
+        reuse pages that may have contained transferable context records.
         """
-        return self.has_mamba_layers or self.has_mixed_precision_kv_cache
+        has_local_fp8_swa = any(
+            not group.enable_kv_transfer
+            and any(
+                isinstance(spec, SlidingWindowSpec)
+                and spec.dtype in (torch.float8_e4m3fn, torch.uint8)
+                for spec in iter_layer_specs(group.kv_cache_spec)
+            )
+            for group in self.kv_cache_groups
+        )
+        return (
+            self.has_mamba_layers
+            or self.has_mixed_precision_kv_cache
+            or has_local_fp8_swa
+        )

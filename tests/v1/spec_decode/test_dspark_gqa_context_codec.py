@@ -96,3 +96,56 @@ def test_gqa_codec_wire_is_full_history_and_native_groups_are_local():
     assert wire.enable_kv_transfer
     assert isinstance(wire.kv_cache_spec, HiddenStateCacheSpec)
     assert wire.kv_cache_spec.page_size_bytes == 64 * 520
+
+
+def test_restore_uses_real_prompt_end_and_clears_recycled_pages(monkeypatch):
+    from types import SimpleNamespace
+
+    from vllm.v1.worker.gpu.spec_decode.dspark import gqa_context_cache
+
+    monkeypatch.setattr(
+        gqa_context_cache,
+        "get_kv_transfer_group",
+        lambda: SimpleNamespace(wait_for_layer_load=lambda layer_name: None),
+    )
+    cache = object.__new__(gqa_context_cache.GQAContextCache)
+    cache.layer_name = "wire"
+    cache.window = 8
+    cache.native_context_lookahead = 2
+    cache.restore_ends = {"request": 11}
+    cache.restored_rows = 0
+    cache.codec = SimpleNamespace(decode=lambda wire, dtype: wire.to(dtype))
+    cache.kv_cache = torch.arange(40, dtype=torch.uint8).view(10, 1, 4, 1)
+
+    native_cache = torch.full((10, 1, 4, 2), 255, dtype=torch.uint8)
+    model = SimpleNamespace(
+        _attn_layers=[SimpleNamespace(kv_cache=native_cache)],
+        hidden_norm=SimpleNamespace(weight=torch.zeros((), dtype=torch.bfloat16)),
+    )
+    page_table = torch.arange(1, 10).reshape(1, -1)
+    tables = SimpleNamespace(
+        input_block_tables=[page_table, page_table],
+        kernel_block_sizes=[4, 4],
+    )
+    batch = SimpleNamespace(
+        req_ids=["request"],
+        is_prefilling_np=np.array([True]),
+        num_computed_prefill_tokens_np=np.array([11]),
+        num_scheduled_tokens=np.array([3]),
+        prefill_len_np=np.array([12]),
+    )
+
+    def store(states, positions, slots):
+        # The first forward schedules one prompt token and two spec placeholders.
+        # It needs the history as of position 12, rather than position 14.
+        torch.testing.assert_close(positions, torch.arange(5, 11))
+        torch.testing.assert_close(slots[0], torch.arange(9, 15))
+        torch.testing.assert_close(states[:, 0], torch.arange(9, 15).bfloat16())
+        assert not native_cache[2:5].any()
+        assert (native_cache[1] == 255).all()
+        assert (native_cache[5] == 255).all()
+
+    draft = SimpleNamespace(model=model, precompute_and_store_context_kv=store)
+    cache.restore(draft, batch, tables, wire_gid=0, native_gids=[1])
+    assert cache.restored_rows == 6
+    assert not cache.restore_ends
